@@ -166,14 +166,9 @@ fn handle_gui_failure(
 
         std::env::set_var("WINIT_UNIX_BACKEND", "x11");
 
-        let x11_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([w, h])
-                .with_min_inner_size([min_w, min_h])
-                .with_resizable(true)
-                .with_title("rust-feh"),
-            ..Default::default()
-        };
+        let (w, h) = window_preset_dimensions(WindowSizePreset::default());
+        let (min_w, min_h) = WINDOW_MIN_RESIZABLE;
+        let x11_options = build_native_options(w, h, min_w, min_h);
 
         if let Err(err2) = eframe::run_native(
             "rust-feh",
