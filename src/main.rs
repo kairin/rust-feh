@@ -218,7 +218,7 @@ impl RustFehApp {
             ));
             self.selected = Some(path.clone());
             self.status = format!(
-                "Selected: {}. Click 'Open in feh' or the resize button.",
+                "Selected: {}. Use Tools → Open in feh or Quick resize.",
                 path.display()
             );
             return Some(path);
@@ -250,6 +250,36 @@ impl RustFehApp {
             return;
         }
         self.set_wallpaper(path);
+    }
+
+    fn run_quick_resize_demo(&mut self, path: &Path) {
+        let opts = ProcessOptions {
+            width: None,
+            height: None,
+            percent: Some(50.0),
+            target_format: Some("jpg".into()),
+            quality: Some(80),
+            output_dir: None,
+        };
+        match process_image(path, &opts) {
+            Ok(out) => {
+                if let Some(ref inv) = self.scan_inventory {
+                    let inventory = refresh_entry_and_inventory(
+                        &mut self.images,
+                        path,
+                        inv.non_image_skipped,
+                        inv.magick_identify_truncated,
+                    );
+                    self.scan_inventory = Some(inventory);
+                }
+                self.status = format!("Processed → {} (inventory updated)", out.display());
+                self.log(format!("Resize demo created: {}", out.display()));
+            }
+            Err(e) => {
+                self.status = format!("Process error: {}", e);
+                self.log(format!("Resize error: {}", e));
+            }
+        }
     }
 
     fn clamp_viewport_size(&self, size: egui::Vec2) -> egui::Vec2 {
@@ -1007,10 +1037,39 @@ impl App for RustFehApp {
                     }
                 });
                 ui.menu_button("Tools", |ui| {
+                    let has_folder = self.current_dir.is_some();
+                    let has_selection = self.selected.is_some();
                     if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
                         ui.close_menu();
                         self.log("User clicked 'Open in feh' (menu)");
                         self.try_open_in_feh();
+                    }
+                    if Self::feh_button(
+                        ui,
+                        "Set as wallpaper (feh --bg-fill)",
+                        self.feh_available,
+                        has_folder && !self.scanning && has_selection,
+                    )
+                    .clicked()
+                    {
+                        ui.close_menu();
+                        if let Some(path) = self.selected.clone() {
+                            self.log("User clicked 'Set as wallpaper' (menu)");
+                            self.try_set_wallpaper(&path);
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            has_folder && has_selection,
+                            egui::Button::new("Quick resize 50% (demo)"),
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        if let Some(path) = self.selected.clone() {
+                            self.log("User clicked resize demo (menu)");
+                            self.run_quick_resize_demo(&path);
+                        }
                     }
                     if ui.button("Recheck tools on PATH").clicked() {
                         ui.close_menu();
@@ -1095,70 +1154,6 @@ impl App for RustFehApp {
                         }
                     });
                 });
-            });
-
-            ui.horizontal(|ui| {
-                if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
-                    self.log("User clicked 'Open in feh'");
-                    self.try_open_in_feh();
-                }
-
-                if Self::feh_button(
-                    ui,
-                    "Set as wallpaper (feh --bg-fill)",
-                    self.feh_available,
-                    has_folder && !self.scanning && self.selected.is_some(),
-                )
-                .clicked()
-                {
-                    if !self.feh_available {
-                        self.status = feh_missing_status();
-                    } else if let Some(path) = self.selected.clone() {
-                        self.log("User clicked 'Set as wallpaper'");
-                        self.try_set_wallpaper(&path);
-                    } else {
-                        self.status = "No image selected".to_owned();
-                    }
-                }
-
-                if ui.add_enabled(has_folder, egui::Button::new("Quick resize 50% (demo)")).clicked()
-                {
-                    if let Some(path) = self.selected.clone() {
-                        self.log("User clicked resize demo");
-                        let opts = ProcessOptions {
-                            width: None,
-                            height: None,
-                            percent: Some(50.0),
-                            target_format: Some("jpg".into()),
-                            quality: Some(80),
-                            output_dir: None,
-                        };
-                        match process_image(&path, &opts) {
-                            Ok(out) => {
-                                if let Some(ref inv) = self.scan_inventory {
-                                    let inventory = refresh_entry_and_inventory(
-                                        &mut self.images,
-                                        &path,
-                                        inv.non_image_skipped,
-                                        inv.magick_identify_truncated,
-                                    );
-                                    self.scan_inventory = Some(inventory);
-                                }
-                                self.status = format!(
-                                    "Processed → {} (inventory updated)",
-                                    out.display()
-                                );
-                                self.log(format!("Resize demo created: {}", out.display()));
-                            }
-                            Err(e) => {
-                                self.status = format!("Process error: {}", e);
-                                self.log(format!("Resize error: {}", e));
-                            }
-                        }
-                    } else {
-                        self.status = "No image selected".to_owned();
-                    }
-                }
             });
         });
 
@@ -1361,7 +1356,7 @@ impl RustFehApp {
         self.selected = Some(path);
         self.log(format!("Selected image: {}", disp));
         self.status = format!(
-            "Selected: {}. Click 'Open in feh' or the resize button.",
+            "Selected: {}. Use Tools → Open in feh or Quick resize.",
             disp
         );
     }
@@ -1473,7 +1468,7 @@ impl RustFehApp {
             self.selected = Some(p.clone());
             self.status = post_scan_status(
                 &format!(
-                    "Loaded {} images. First selected (click Open in feh to view).",
+                    "Loaded {} images. First selected (Tools → Open in feh to view).",
                     self.images.len()
                 ),
                 self.feh_available,
