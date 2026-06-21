@@ -28,18 +28,100 @@ use std::thread;
 
 static STARTUP_NOTICE: Once = Once::new();
 
-fn main() -> eframe::Result<()> {
+fn create_rust_feh_app(
+    status: String,
+    feh_available: bool,
+    tool_caps: ToolCapabilities,
+    deps_section_open: bool,
+    tools_panel_ok: bool,
+) -> Box<dyn App> {
+    Box::new(RustFehApp {
+        current_dir: None,
+        images: vec![],
+        selected: None,
+        status,
+        debug_logs: vec![],
+        search: String::new(),
+        prior_search: String::new(),
+        recursive: true,
+        feh_available,
+        tool_caps,
+        scanning: false,
+        scroll_generation: 0,
+        sort_mode: SortMode::default(),
+        prior_sort_mode: SortMode::default(),
+        window_size: WindowSizePreset::default(),
+        prior_window_size: WindowSizePreset::default(),
+        window_resizable: true,
+        prior_window_resizable: true,
+        scan_inventory: None,
+        list_view_mode: ListViewMode::default(),
+        tree_expanded_paths: default_tree_expanded(),
+        scan_generation: 0,
+        scan_rx: None,
+        activity_log_detached: false,
+        session_status_detached: false,
+        deps_detached: false,
+        format_discovery_detached: false,
+        browse_detached: false,
+        image_actions_detached: false,
+        deps_section_open,
+        browse_section_open: true,
+        image_actions_section_open: true,
+        activity_log_open: false,
+        session_status_open: false,
+        format_discovery_open: !tools_panel_ok,
+        format_route_open: HashSet::new(),
+        start_folder_loaded: false,
+    })
+}
+
+fn main() {
+    if let Err(err) = try_run_gui() {
+        eprintln!("[rust-feh] {}", err);
+        std::process::exit(1);
+    }
+}
+
+fn try_run_gui() -> Result<(), String> {
     let (w, h) = window_preset_dimensions(WindowSizePreset::default());
     let (min_w, min_h) = WINDOW_MIN_RESIZABLE;
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([w, h])
-            .with_min_inner_size([min_w, min_h])
-            .with_resizable(true)
-            .with_title("rust-feh"),
-        ..Default::default()
-    };
 
+    let (status, feh_available, tool_caps, deps_section_open, tools_panel_ok) = detect_app_state();
+
+    let options = build_native_options(w, h, min_w, min_h);
+
+    let status_first = status.clone();
+    let tool_caps_first = tool_caps.clone();
+
+    let result = eframe::run_native(
+        "rust-feh",
+        options.clone(),
+        Box::new(move |_cc| {
+            Ok(create_rust_feh_app(
+                status_first,
+                feh_available,
+                tool_caps_first,
+                deps_section_open,
+                tools_panel_ok,
+            ) as Box<dyn App>)
+        }),
+    );
+
+    if let Err(err) = result {
+        return handle_gui_failure(
+            err,
+            status,
+            feh_available,
+            tool_caps,
+            deps_section_open,
+            tools_panel_ok,
+        );
+    }
+    Ok(())
+}
+
+fn detect_app_state() -> (String, bool, ToolCapabilities, bool, bool) {
     let tool_caps = ToolCapabilities::detect();
     let feh_available = tool_caps.feh_available;
     let deps_section_open = tool_caps.has_missing_required();
@@ -49,52 +131,64 @@ fn main() -> eframe::Result<()> {
     } else {
         "feh not found — install with `sudo apt install feh`".to_string()
     };
+    (status, feh_available, tool_caps, deps_section_open, tools_panel_ok)
+}
 
-    eframe::run_native(
-        "rust-feh",
-        options,
-        Box::new(move |_cc| -> std::result::Result<_, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Box::new(RustFehApp {
-                current_dir: None,
-                images: vec![],
-                selected: None,
-                status,
-                debug_logs: vec![],
-                search: String::new(),
-                prior_search: String::new(),
-                recursive: true,
-                feh_available,
-                tool_caps,
-                scanning: false,
-                scroll_generation: 0,
-                sort_mode: SortMode::default(),
-                prior_sort_mode: SortMode::default(),
-                window_size: WindowSizePreset::default(),
-                prior_window_size: WindowSizePreset::default(),
-                window_resizable: true,
-                prior_window_resizable: true,
-                scan_inventory: None,
-                list_view_mode: ListViewMode::default(),
-                tree_expanded_paths: default_tree_expanded(),
-                scan_generation: 0,
-                scan_rx: None,
-                activity_log_detached: false,
-                session_status_detached: false,
-                deps_detached: false,
-                format_discovery_detached: false,
-                browse_detached: false,
-                image_actions_detached: false,
-                deps_section_open,
-                browse_section_open: true,
-                image_actions_section_open: true,
-                activity_log_open: false,
-                session_status_open: false,
-                format_discovery_open: !tools_panel_ok,
-                format_route_open: HashSet::new(),
-                start_folder_loaded: false,
-            }) as Box<dyn App>)
-        }),
-    )?;
+fn build_native_options(w: f32, h: f32, min_w: f32, min_h: f32) -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([w, h])
+            .with_min_inner_size([min_w, min_h])
+            .with_resizable(true)
+            .with_title("rust-feh"),
+        ..Default::default()
+    }
+}
+
+fn handle_gui_failure(
+    err: eframe::Error,
+    status: String,
+    feh_available: bool,
+    tool_caps: ToolCapabilities,
+    deps_section_open: bool,
+    tools_panel_ok: bool,
+) -> Result<(), String> {
+    eprintln!("[rust-feh] Failed to initialize GUI window: {}", err);
+
+    let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if on_wayland {
+        eprintln!("[rust-feh] Wayland environment detected (WAYLAND_DISPLAY set).");
+        eprintln!("[rust-feh] Native Wayland backend failed to connect (this happens when no compositor is available,");
+        eprintln!("[rust-feh] e.g. some SSH sessions, broken sockets, or misconfigured Wayland setups).");
+        eprintln!("[rust-feh] Most real Wayland desktops (GNOME, KDE Plasma, Sway, Hyprland, etc.) work great with");
+        eprintln!("[rust-feh] native Wayland when a compositor is running.");
+        eprintln!("[rust-feh] Retrying with X11 backend (XWayland) as fallback...");
+
+        std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+
+        let (w, h) = window_preset_dimensions(WindowSizePreset::default());
+        let (min_w, min_h) = WINDOW_MIN_RESIZABLE;
+        let x11_options = build_native_options(w, h, min_w, min_h);
+
+        if let Err(err2) = eframe::run_native(
+            "rust-feh",
+            x11_options,
+            Box::new(move |_cc| {
+                Ok(create_rust_feh_app(
+                    status,
+                    feh_available,
+                    tool_caps,
+                    deps_section_open,
+                    tools_panel_ok,
+                ) as Box<dyn App>)
+            }),
+        ) {
+            return Err(format!("X11 fallback also failed: {}. No usable display server found. For normal Wayland use: make sure a compositor is active (e.g. start from a login manager). You can also force X11 manually: WINIT_UNIX_BACKEND=x11 ./rust-feh", err2));
+        }
+        eprintln!("[rust-feh] Running via X11 fallback this time. Native Wayland works on standard desktop compositors.");
+    } else {
+        return Err("No Wayland detected. Ensure a display (X11 or Wayland compositor) is available. Check DISPLAY and/or WAYLAND_DISPLAY environment variables.".to_string());
+    }
     Ok(())
 }
 
