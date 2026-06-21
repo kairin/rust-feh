@@ -2,13 +2,13 @@
 
 ![rust-feh — image list and Inspector (Browse, Image actions, Dependencies)](docs/assets/readme-screenshot.png)
 
-Linux-first **feh orchestrator**: browse and select images at scale in a lightweight GUI; view, navigate, and set wallpaper via **feh**. Lightweight resize for common formats uses the in-process `image` crate; optional ImageMagick extends format coverage when installed.
+Linux-first **feh orchestrator**: browse and select images at scale in a lightweight GUI; open and navigate via **feh**. Lightweight resize for common formats uses the in-process `image` crate; optional ImageMagick extends format coverage when installed.
 
-**Not a feh replacement** — the GUI owns folder scan, filter, sort, and launch; feh owns the viewer and desktop background.
+**Not a feh replacement** — the GUI owns folder scan, filter, sort, and launch; **feh** owns the viewer.
 
 ## Status
 
-From-scratch Rust successor to archived **nfeh** — same broad idea (pick from a folder, set wallpaper), different architecture: feh is actually invoked, lists scale to 10k+ images, and the runtime is a single native binary (egui/eframe, no Electron).
+From-scratch Rust successor to archived **nfeh** — same broad idea (pick from a folder, act on images), different architecture: feh is actually invoked, lists scale to 10k+ images, and the runtime is a single native binary (egui/eframe, no Electron).
 
 - Original nfeh code lives in `archive/original-nfeh/` until rust-feh is fully verified.
 - **Positioning:** [docs/POSITIONING.md](docs/POSITIONING.md)
@@ -17,7 +17,7 @@ From-scratch Rust successor to archived **nfeh** — same broad idea (pick from 
 ## Requirements
 
 - Rust (stable) — **install via rustup** (see below)
-- `feh` (for viewing and wallpaper features): `sudo apt install feh`
+- `feh` (for viewing): `sudo apt install feh`
 - Optional: `magick` or `convert` (ImageMagick) for more format options in image tools
 
 ### Install Rust (do this first)
@@ -51,19 +51,65 @@ sudo apt install -y build-essential pkg-config libssl-dev \
     libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0
 ```
 
-## Tools used
+## Libraries & tools
 
-![rust-feh — detachable Dependencies and Format discovery panels](docs/assets/readme-tools.jpg)
+![In-process Rust crates and external PATH tools](docs/assets/readme-libraries.png)
 
-rust-feh keeps browsing and filtering in-process; viewing and format detection delegate to tools on your **PATH**. The **Inspector** shows status and per-format routing — detach **Dependencies** or **Format discovery** into floating windows when you need more room.
+### In-process (Rust crates)
+
+| Crate | Role |
+|-------|------|
+| **eframe** + **egui** | Native GUI (OpenGL/glow backend) |
+| **walkdir** | Recursive folder scan |
+| **image** | Quick resize for jpg/png/webp |
+| **which** | Detect `feh` / `magick` on PATH |
+| **rfd** | Native “Choose folder” dialog |
+
+Core modules: `scanner`, `ui_logic`, `tool_caps`, `image_proc`, `types` (GUI in `main.rs`).
+
+### External tools (PATH)
+
+![Inspector — Browse, Image actions, detachable Dependencies & Format discovery](docs/assets/readme-tools.jpg)
+
+The **Inspector** (right panel) shows what is installed and how each format is routed. Detach **Dependencies** or **Format discovery** when you need more room.
 
 | Tool | Required? | Role |
 |------|-----------|------|
-| **feh** | Yes | Open images, slideshow, navigate the filtered filelist |
+| **feh** | Yes | Open images, slideshow, navigate the filtered filelist (**Inspector → Image actions**) |
 | **ImageMagick** (`magick` / `convert`) | Optional | Magick-detect unlisted formats at scan; convert/view exotic types |
-| **image crate** | Built-in | Quick resize demo for jpg/png/webp — no external deps |
+| **image crate** | Built-in | Quick resize demo — no external deps |
 
-After installing a missing tool, click **Recheck tools on PATH** in the Dependencies panel.
+After installing a missing tool, click **Recheck tools on PATH** in **Inspector → Dependencies** (not a top-level Tools menu).
+
+## Resource usage
+
+There is no in-app RAM/CPU meter. Use the scripts below (or `ps` / `/proc`) from a second terminal while rust-feh is running.
+
+![Automated resource measurement script output](docs/assets/readme-resource-measure.png)
+
+```fish
+# Full protocol: 10k fixture, 60s of samples, PASS/FAIL vs 150 MB goal
+./scripts/measure-resources.sh 10000 60
+
+# One-shot RSS in KB
+./scripts/sample-rss.sh
+
+# Live watch
+watch -n 1 'ps -o pid,rss,vsz,%cpu,%mem,cmd -p $(pgrep -x rust-feh)'
+```
+
+![Quick RSS / ps check while 500 images are loaded](docs/assets/readme-resource-ps.png)
+
+**Measured on this machine (metadata-only list, no thumbnails):**
+
+| Images loaded | RSS peak | SC-004 goal |
+|---------------|----------|-------------|
+| 1,000 | ~124 MB | < 150 MB — pass |
+| 10,000 | ~126 MB | < 150 MB — pass |
+
+**Note:** `feh` runs as a **separate process** when you open an image — its memory is not included in `rust-feh` RSS.
+
+Test hook for scripts: `RUST_FEH_START_FOLDER=/path/to/images ./rust-feh` auto-loads a folder on startup.
 
 ## Build & Run
 
@@ -83,22 +129,21 @@ Then you can run `./rust-feh` from the root.
 
 ## Current Features (MVP)
 
-- **Persistent layout**: top toolbar + menu bar and bottom status bar stay visible while scrolling large lists
+- **Menubar** (File, View) + **Inspector** side panel with detachable segments (Browse, Image actions, Session status, Activity log, Dependencies, Format discovery)
 - **Virtualized browsing**: `show_rows` for flat list and folder tree — smooth on 10k+ images (metadata only)
 - **Flat list**: Folder + Filename + **Status** columns (`native`, `magick · awaiting convert`, `converted`)
 - **Folder tree**: toggle Flat list / Folder tree; expand/collapse folders with per-folder counts
 - **Scan inventory bar**: after each scan — native listed, magick-detected, converted, awaiting convert, non-image skipped
-- **Filter & sort**: case-insensitive filter (filename, folder, path); Path / Name / Folder sort with scroll reset
-- Choose folder (toolbar or File menu); native formats (jpg, png, webp, gif, bmp) plus optional ImageMagick identify for unlisted types
+- **Filter & sort**: in **Inspector → Browse**; Path / Name / Folder sort with scroll reset
+- Choose folder (**Browse** or File menu); native formats (jpg, png, webp, gif, bmp) plus optional ImageMagick identify for unlisted types
 - Select image in list; first image auto-selected on load — **feh does not auto-launch**
-- "Open in feh" (filelist across filtered list — cross-subfolder navigation in feh)
-- "Set as wallpaper" using `feh --bg-fill`
+- **Open in feh** and **Quick resize** in **Inspector → Image actions** (filelist across filtered list for feh)
 - Graceful degradation when `feh` is missing (disabled buttons, clear status message)
 - Quick resize demo (50%, powered by the `image` crate; `*_processed.*` tracked in inventory)
-- **Tools & capabilities panel** (right side): dependency status with ✅ collapsed header when OK, install commands, format routing aligned with scan inventory labels
-- **Activity log** (bordered panel, detachable window): selectable text, Copy log / Copy status / Clear logs
+- **Dependencies** + **Format discovery** in Inspector: PATH status, install hints, per-format routing
+- **Activity log** (detachable): selectable text, Copy log / Clear logs; **Session status** has Copy status + rotating speed tips
 - **Background scanning**: UI stays responsive on large or network paths; NAS/GVFS scans skip ImageMagick identify
-- **Live status bar**: pulsing scan indicator, count highlight, rotating speed/timing tips (4s) in bottom bar
+- **Session status** scan pulse + animated dots during scan
 
 More coming: thumbnail grid, full image tools dialog, multi-select, keyboard navigation, config persistence.
 
