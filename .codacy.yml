@@ -1,0 +1,7 @@
+# Codacy configuration
+# Exclude archived legacy code and build artifacts from analysis.
+# docs: https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+---
+exclude_paths:
+  - 'archive/**'
+  - 'target/**'
