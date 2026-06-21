@@ -132,7 +132,7 @@ impl ToolCapabilities {
                 name: "feh",
                 binaries: &["feh"],
                 kind: DepKind::Required,
-                role: "View, slideshow, wallpaper",
+                role: "View, slideshow",
                 install_cmd: "sudo apt install feh",
                 installed: self.feh_available,
                 resolved_binary: self
@@ -178,20 +178,6 @@ impl ToolCapabilities {
                 speed: SpeedTier::Fast,
                 note: if self.feh_available {
                     "Delegated to feh (not in-app viewer)"
-                } else {
-                    "feh missing — install to enable"
-                },
-            },
-            OperationTiming {
-                operation: "Set wallpaper",
-                handler: if self.feh_available {
-                    Handler::Feh
-                } else {
-                    Handler::RustFeh
-                },
-                speed: SpeedTier::Fast,
-                note: if self.feh_available {
-                    "feh --bg-fill"
                 } else {
                     "feh missing — install to enable"
                 },
@@ -376,11 +362,6 @@ mod tests {
             .find(|o| o.operation.contains("Open"))
             .expect("view row");
         assert!(view.note.contains("feh missing"));
-        let wallpaper = ops
-            .iter()
-            .find(|o| o.operation.contains("wallpaper"))
-            .expect("wallpaper row");
-        assert!(wallpaper.note.contains("feh missing"));
     }
 
     #[test]

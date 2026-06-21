@@ -1,5 +1,7 @@
 # rust-feh
 
+![rust-feh — image list and Inspector (Browse, Image actions, Dependencies)](docs/assets/readme-screenshot.png)
+
 Linux-first **feh orchestrator**: browse and select images at scale in a lightweight GUI; view, navigate, and set wallpaper via **feh**. Lightweight resize for common formats uses the in-process `image` crate; optional ImageMagick extends format coverage when installed.
 
 **Not a feh replacement** — the GUI owns folder scan, filter, sort, and launch; feh owns the viewer and desktop background.
@@ -48,6 +50,20 @@ sudo apt update
 sudo apt install -y build-essential pkg-config libssl-dev \
     libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0
 ```
+
+## Tools used
+
+![rust-feh — detachable Dependencies and Format discovery panels](docs/assets/readme-tools.jpg)
+
+rust-feh keeps browsing and filtering in-process; viewing and format detection delegate to tools on your **PATH**. The **Inspector** shows status and per-format routing — detach **Dependencies** or **Format discovery** into floating windows when you need more room.
+
+| Tool | Required? | Role |
+|------|-----------|------|
+| **feh** | Yes | Open images, slideshow, navigate the filtered filelist |
+| **ImageMagick** (`magick` / `convert`) | Optional | Magick-detect unlisted formats at scan; convert/view exotic types |
+| **image crate** | Built-in | Quick resize demo for jpg/png/webp — no external deps |
+
+After installing a missing tool, click **Recheck tools on PATH** in the Dependencies panel.
 
 ## Build & Run
 

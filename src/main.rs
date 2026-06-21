@@ -82,7 +82,11 @@ fn main() -> eframe::Result<()> {
                 session_status_detached: false,
                 deps_detached: false,
                 format_discovery_detached: false,
+                browse_detached: false,
+                image_actions_detached: false,
                 deps_section_open,
+                browse_section_open: true,
+                image_actions_section_open: true,
                 activity_log_open: false,
                 session_status_open: false,
                 format_discovery_open: !tools_panel_ok,
@@ -122,8 +126,12 @@ struct RustFehApp {
     session_status_detached: bool,
     deps_detached: bool,
     format_discovery_detached: bool,
+    browse_detached: bool,
+    image_actions_detached: bool,
     activity_log_open: bool,
     session_status_open: bool,
+    browse_section_open: bool,
+    image_actions_section_open: bool,
     /// Collapsed by default once required dependencies are OK.
     deps_section_open: bool,
     format_discovery_open: bool,
@@ -242,14 +250,6 @@ impl RustFehApp {
             return;
         };
         self.open_in_feh(&path);
-    }
-
-    fn try_set_wallpaper(&mut self, path: &Path) {
-        if !self.feh_available {
-            self.status = feh_missing_status();
-            return;
-        }
-        self.set_wallpaper(path);
     }
 
     fn run_quick_resize_demo(&mut self, path: &Path) {
@@ -625,17 +625,216 @@ impl RustFehApp {
         self.render_format_discovery_body(ui);
     }
 
-    fn render_inspector_panel(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-        shown: usize,
-        total: usize,
-        time: f64,
-    ) {
+    fn browse_header_label(&self) -> String {
+        let base = match &self.current_dir {
+            None => "Browse — No folder loaded".to_string(),
+            Some(dir) => {
+                let name = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| dir.display().to_string());
+                if self.search.is_empty() {
+                    format!("Browse — {name}")
+                } else {
+                    format!("Browse — {name} · filtered")
+                }
+            }
+        };
+        Self::header_with_detach_suffix(base, self.browse_detached)
+    }
+
+    fn render_inspector_browse(&mut self, ui: &mut egui::Ui) {
+        if self.browse_detached {
+            Self::render_detached_placeholder(ui, "Browse");
+            return;
+        }
+
+        if Self::render_segment_detach_toolbar(
+            ui,
+            "Folder, filter, sort, and list view mode",
+            "Detach window",
+        ) {
+            self.browse_detached = true;
+        }
+        self.render_browse_controls_body(ui);
+    }
+
+    fn image_actions_header_label(&self) -> String {
+        let base = match &self.selected {
+            None => "Image actions — no selection".to_string(),
+            Some(path) => format!(
+                "Image actions — {}",
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string())
+            ),
+        };
+        Self::header_with_detach_suffix(base, self.image_actions_detached)
+    }
+
+    fn render_image_actions_body(&mut self, ui: &mut egui::Ui) {
+        let has_folder = self.current_dir.is_some();
+        let has_selection = self.selected.is_some();
+        let feh_ready = self.feh_open_ready();
+
+        if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
+            self.log("User clicked 'Open in feh' (inspector)");
+            self.try_open_in_feh();
+        }
+        if ui
+            .add_enabled(
+                has_folder && has_selection,
+                egui::Button::new("Quick resize 50% (demo)"),
+            )
+            .clicked()
+        {
+            if let Some(path) = self.selected.clone() {
+                self.log("User clicked resize demo (inspector)");
+                self.run_quick_resize_demo(&path);
+            }
+        }
+    }
+
+    fn render_inspector_image_actions(&mut self, ui: &mut egui::Ui) {
+        if self.image_actions_detached {
+            Self::render_detached_placeholder(ui, "Image actions");
+            return;
+        }
+
+        if Self::render_segment_detach_toolbar(
+            ui,
+            "Open selected image in feh or run quick resize",
+            "Detach window",
+        ) {
+            self.image_actions_detached = true;
+        }
+        self.render_image_actions_body(ui);
+    }
+
+    fn render_browse_controls_body(&mut self, ui: &mut egui::Ui) {
+        let has_folder = self.current_dir.is_some();
+
+        ui.vertical(|ui| {
+            if ui.button("Choose folder").clicked() {
+                self.pick_folder();
+            }
+
+            if let Some(dir) = &self.current_dir {
+                ui.add(
+                    egui::Label::new(dir.display().to_string())
+                        .selectable(true)
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+            } else {
+                ui.small("No folder loaded");
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Filter:");
+                ui.add_enabled_ui(has_folder, |ui| {
+                    let field_w = (ui.available_width() - 4.0).clamp(100.0, 200.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Type something to filter")
+                            .desired_width(field_w),
+                    );
+                });
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let mut recursive_changed = false;
+                ui.add_enabled_ui(has_folder, |ui| {
+                    recursive_changed =
+                        ui.checkbox(&mut self.recursive, "Include subfolders").changed();
+                });
+                if recursive_changed {
+                    if let Some(d) = self.current_dir.clone() {
+                        self.scan_directory(&d);
+                    }
+                }
+
+                if ui.add_enabled(has_folder, egui::Button::new("Rescan")).clicked() {
+                    if let Some(d) = self.current_dir.clone() {
+                        self.scan_directory(&d);
+                    }
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Sort:");
+                ui.add_enabled_ui(has_folder, |ui| {
+                    egui::ComboBox::from_id_salt("sort_mode")
+                        .selected_text(sort_mode_label(self.sort_mode))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.sort_mode, SortMode::Path, "Path");
+                            ui.selectable_value(&mut self.sort_mode, SortMode::Name, "Name");
+                            ui.selectable_value(&mut self.sort_mode, SortMode::Folder, "Folder");
+                        });
+                });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("View:");
+                ui.add_enabled_ui(has_folder, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(
+                                self.list_view_mode == ListViewMode::FlatList,
+                                list_view_mode_label(ListViewMode::FlatList),
+                            )
+                            .clicked()
+                        {
+                            self.list_view_mode = ListViewMode::FlatList;
+                        }
+                        if ui
+                            .selectable_label(
+                                self.list_view_mode == ListViewMode::FolderTree,
+                                list_view_mode_label(ListViewMode::FolderTree),
+                            )
+                            .clicked()
+                        {
+                            self.list_view_mode = ListViewMode::FolderTree;
+                            if self.tree_expanded_paths.is_empty() {
+                                self.tree_expanded_paths = default_tree_expanded();
+                            }
+                        }
+                    });
+                });
+            });
+        });
+    }
+
+    fn render_inspector_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, time: f64) {
+        let (total, filtered) = self.compute_list_indices();
+        let shown = filtered.len();
+
         ui.heading("Inspector");
-        ui.label("Activity, external tools, and format routing.");
+        ui.label("Browse, image actions, session, and format routing.");
         ui.separator();
+
+        let browse_header = self.browse_header_label();
+        let browse_response = egui::CollapsingHeader::new(browse_header)
+            .id_salt("inspector_browse")
+            .open(Some(self.browse_section_open))
+            .show(ui, |ui| {
+                self.render_inspector_browse(ui);
+            });
+        if browse_response.header_response.clicked() {
+            self.browse_section_open = !self.browse_section_open;
+        }
+
+        let actions_header = self.image_actions_header_label();
+        let actions_response = egui::CollapsingHeader::new(actions_header)
+            .id_salt("inspector_image_actions")
+            .open(Some(self.image_actions_section_open))
+            .show(ui, |ui| {
+                self.render_inspector_image_actions(ui);
+            });
+        if actions_response.header_response.clicked() {
+            self.image_actions_section_open = !self.image_actions_section_open;
+        }
 
         let pulse_fill = if self.scanning {
             Self::activity_pulse_color(time, true)
@@ -856,13 +1055,36 @@ impl RustFehApp {
         self.render_session_status_body(ui, ctx, shown, total, time);
     }
 
-    fn render_detached_inspector_windows(
-        &mut self,
-        ctx: &egui::Context,
-        shown: usize,
-        total: usize,
-    ) {
+    fn render_detached_inspector_windows(&mut self, ctx: &egui::Context) {
         let time = ctx.input(|i| i.time);
+        let (total, filtered) = self.compute_list_indices();
+        let shown = filtered.len();
+
+        if self.browse_detached {
+            let mut open = self.browse_detached;
+            egui::Window::new("Browse")
+                .open(&mut open)
+                .collapsible(true)
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    self.render_browse_controls_body(ui);
+                });
+            self.browse_detached = open;
+        }
+
+        if self.image_actions_detached {
+            let mut open = self.image_actions_detached;
+            egui::Window::new("Image actions")
+                .open(&mut open)
+                .collapsible(true)
+                .resizable(true)
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    self.render_image_actions_body(ui);
+                });
+            self.image_actions_detached = open;
+        }
 
         if self.session_status_detached {
             let mut open = self.session_status_detached;
@@ -968,10 +1190,7 @@ impl App for RustFehApp {
             });
         }
 
-        let (total, filtered) = self.compute_list_indices();
-        let shown = filtered.len();
         let list_root = self.current_dir.clone();
-        let feh_ready = self.feh_open_ready();
 
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -1036,124 +1255,6 @@ impl App for RustFehApp {
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("Tools", |ui| {
-                    let has_folder = self.current_dir.is_some();
-                    let has_selection = self.selected.is_some();
-                    if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
-                        ui.close_menu();
-                        self.log("User clicked 'Open in feh' (menu)");
-                        self.try_open_in_feh();
-                    }
-                    if Self::feh_button(
-                        ui,
-                        "Set as wallpaper (feh --bg-fill)",
-                        self.feh_available,
-                        has_folder && !self.scanning && has_selection,
-                    )
-                    .clicked()
-                    {
-                        ui.close_menu();
-                        if let Some(path) = self.selected.clone() {
-                            self.log("User clicked 'Set as wallpaper' (menu)");
-                            self.try_set_wallpaper(&path);
-                        }
-                    }
-                    if ui
-                        .add_enabled(
-                            has_folder && has_selection,
-                            egui::Button::new("Quick resize 50% (demo)"),
-                        )
-                        .clicked()
-                    {
-                        ui.close_menu();
-                        if let Some(path) = self.selected.clone() {
-                            self.log("User clicked resize demo (menu)");
-                            self.run_quick_resize_demo(&path);
-                        }
-                    }
-                    if ui.button("Recheck tools on PATH").clicked() {
-                        ui.close_menu();
-                        self.log("User clicked 'Recheck tools on PATH' (menu)");
-                        self.refresh_tool_caps();
-                    }
-                });
-            });
-
-            let has_folder = self.current_dir.is_some();
-
-            ui.horizontal(|ui| {
-                if ui.button("Choose folder").clicked() {
-                    self.pick_folder();
-                }
-
-                if let Some(dir) = &self.current_dir {
-                    ui.label(dir.display().to_string());
-                } else {
-                    ui.label("No folder loaded");
-                }
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("Filter:");
-                ui.add_enabled_ui(has_folder, |ui| {
-                    ui.text_edit_singleline(&mut self.search);
-                });
-
-                let mut recursive_changed = false;
-                ui.add_enabled_ui(has_folder, |ui| {
-                    recursive_changed =
-                        ui.checkbox(&mut self.recursive, "Include subfolders").changed();
-                });
-                if recursive_changed {
-                    if let Some(d) = self.current_dir.clone() {
-                        self.scan_directory(&d);
-                    }
-                }
-
-                if ui.add_enabled(has_folder, egui::Button::new("Rescan")).clicked() {
-                    if let Some(d) = self.current_dir.clone() {
-                        self.scan_directory(&d);
-                    }
-                }
-
-                ui.label("Sort:");
-                ui.add_enabled_ui(has_folder, |ui| {
-                    egui::ComboBox::from_id_salt("sort_mode")
-                        .selected_text(sort_mode_label(self.sort_mode))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.sort_mode, SortMode::Path, "Path");
-                            ui.selectable_value(&mut self.sort_mode, SortMode::Name, "Name");
-                            ui.selectable_value(&mut self.sort_mode, SortMode::Folder, "Folder");
-                        });
-                });
-
-                ui.separator();
-                ui.label("View:");
-                ui.add_enabled_ui(has_folder, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(
-                                self.list_view_mode == ListViewMode::FlatList,
-                                list_view_mode_label(ListViewMode::FlatList),
-                            )
-                            .clicked()
-                        {
-                            self.list_view_mode = ListViewMode::FlatList;
-                        }
-                        if ui
-                            .selectable_label(
-                                self.list_view_mode == ListViewMode::FolderTree,
-                                list_view_mode_label(ListViewMode::FolderTree),
-                            )
-                            .clicked()
-                        {
-                            self.list_view_mode = ListViewMode::FolderTree;
-                            if self.tree_expanded_paths.is_empty() {
-                                self.tree_expanded_paths = default_tree_expanded();
-                            }
-                        }
-                    });
-                });
             });
         });
 
@@ -1169,9 +1270,12 @@ impl App for RustFehApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let time = ctx.input(|i| i.time);
-                        self.render_inspector_panel(ui, ctx, shown, total, time);
+                        self.render_inspector_panel(ui, ctx, time);
                     });
             });
+
+        // Recompute after menus/inspector — Rescan clears images mid-frame.
+        let (_total, filtered) = self.compute_list_indices();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::Frame::group(ui.style())
@@ -1238,6 +1342,9 @@ impl App for RustFehApp {
                                 break;
                             }
                             let i = filtered[row];
+                            if i >= self.images.len() {
+                                continue;
+                            }
                             let path = self.images[i].path.clone();
                             let folder = relative_folder(list_root.as_deref(), &path);
                             let name = file_name_display(&path);
@@ -1340,7 +1447,7 @@ impl App for RustFehApp {
                 });
         });
 
-        self.render_detached_inspector_windows(ctx, shown, total);
+        self.render_detached_inspector_windows(ctx);
 
         let busy = self.is_activity_busy();
         let tip_animating = !self.tool_caps.operation_timings().is_empty();
@@ -1387,6 +1494,7 @@ impl RustFehApp {
         self.scan_inventory = None;
         self.tree_expanded_paths = default_tree_expanded();
         self.scan_generation = self.scan_generation.wrapping_add(1);
+        self.scroll_generation = self.scroll_generation.wrapping_add(1);
         let generation = self.scan_generation;
 
         let dir_path = dir.to_path_buf();
@@ -1539,26 +1647,4 @@ impl RustFehApp {
         }
     }
 
-    fn set_wallpaper(&mut self, path: &Path) {
-        let mut cmd = Command::new("feh");
-        cmd.arg("--bg-fill").arg(path);
-
-        self.log(format!("Spawning wallpaper command: {:?}", cmd));
-
-        match cmd.spawn() {
-            Ok(_) => {
-                self.log("Wallpaper command spawned successfully");
-                self.status = format!("Wallpaper set via feh --bg-fill: {}", path.display());
-            }
-            Err(e) => {
-                self.log(format!("Failed to set wallpaper: {}", e));
-                if feh_spawn_unavailable(&e) {
-                    self.mark_feh_unavailable();
-                } else {
-                    self.status =
-                        format!("Failed to set wallpaper (feh --bg-fill): {}", e);
-                }
-            }
-        }
-    }
 }
