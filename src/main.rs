@@ -124,47 +124,66 @@ fn try_run_gui() -> Result<(), String> {
     );
 
     if let Err(err) = result {
-        eprintln!("[rust-feh] Failed to initialize GUI window: {}", err);
+        return handle_gui_failure(
+            err,
+            status,
+            feh_available,
+            tool_caps,
+            deps_section_open,
+            tools_panel_ok,
+        );
+    }
+    Ok(())
+}
 
-        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-        if on_wayland {
-            eprintln!("[rust-feh] Wayland environment detected (WAYLAND_DISPLAY set).");
-            eprintln!("[rust-feh] Native Wayland backend failed to connect (this happens when no compositor is available,");
-            eprintln!("[rust-feh] e.g. some SSH sessions, broken sockets, or misconfigured Wayland setups).");
-            eprintln!("[rust-feh] Most real Wayland desktops (GNOME, KDE Plasma, Sway, Hyprland, etc.) work great with");
-            eprintln!("[rust-feh] native Wayland when a compositor is running.");
-            eprintln!("[rust-feh] Retrying with X11 backend (XWayland) as fallback...");
+fn handle_gui_failure(
+    err: eframe::Error,
+    status: String,
+    feh_available: bool,
+    tool_caps: ToolCapabilities,
+    deps_section_open: bool,
+    tools_panel_ok: bool,
+) -> Result<(), String> {
+    eprintln!("[rust-feh] Failed to initialize GUI window: {}", err);
 
-            std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+    let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if on_wayland {
+        eprintln!("[rust-feh] Wayland environment detected (WAYLAND_DISPLAY set).");
+        eprintln!("[rust-feh] Native Wayland backend failed to connect (this happens when no compositor is available,");
+        eprintln!("[rust-feh] e.g. some SSH sessions, broken sockets, or misconfigured Wayland setups).");
+        eprintln!("[rust-feh] Most real Wayland desktops (GNOME, KDE Plasma, Sway, Hyprland, etc.) work great with");
+        eprintln!("[rust-feh] native Wayland when a compositor is running.");
+        eprintln!("[rust-feh] Retrying with X11 backend (XWayland) as fallback...");
 
-            let x11_options = eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_inner_size([w, h])
-                    .with_min_inner_size([min_w, min_h])
-                    .with_resizable(true)
-                    .with_title("rust-feh"),
-                ..Default::default()
-            };
+        std::env::set_var("WINIT_UNIX_BACKEND", "x11");
 
-            if let Err(err2) = eframe::run_native(
-                "rust-feh",
-                x11_options,
-                Box::new(move |_cc| {
-                    Ok(create_rust_feh_app(
-                        status,
-                        feh_available,
-                        tool_caps,
-                        deps_section_open,
-                        tools_panel_ok,
-                    ) as Box<dyn App>)
-                }),
-            ) {
-                return Err(format!("X11 fallback also failed: {}. No usable display server found. For normal Wayland use: make sure a compositor is active (e.g. start from a login manager). You can also force X11 manually: WINIT_UNIX_BACKEND=x11 ./rust-feh", err2));
-            }
-            eprintln!("[rust-feh] Running via X11 fallback this time. Native Wayland works on standard desktop compositors.");
-        } else {
-            return Err("No Wayland detected. Ensure a display (X11 or Wayland compositor) is available. Check DISPLAY and/or WAYLAND_DISPLAY environment variables.".to_string());
+        let x11_options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([w, h])
+                .with_min_inner_size([min_w, min_h])
+                .with_resizable(true)
+                .with_title("rust-feh"),
+            ..Default::default()
+        };
+
+        if let Err(err2) = eframe::run_native(
+            "rust-feh",
+            x11_options,
+            Box::new(move |_cc| {
+                Ok(create_rust_feh_app(
+                    status,
+                    feh_available,
+                    tool_caps,
+                    deps_section_open,
+                    tools_panel_ok,
+                ) as Box<dyn App>)
+            }),
+        ) {
+            return Err(format!("X11 fallback also failed: {}. No usable display server found. For normal Wayland use: make sure a compositor is active (e.g. start from a login manager). You can also force X11 manually: WINIT_UNIX_BACKEND=x11 ./rust-feh", err2));
         }
+        eprintln!("[rust-feh] Running via X11 fallback this time. Native Wayland works on standard desktop compositors.");
+    } else {
+        return Err("No Wayland detected. Ensure a display (X11 or Wayland compositor) is available. Check DISPLAY and/or WAYLAND_DISPLAY environment variables.".to_string());
     }
     Ok(())
 }
