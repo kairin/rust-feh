@@ -92,7 +92,9 @@ Cross-ref [001 V1](../001-persistent-ui-virtual-browsing/quickstart.md#v1-persis
 
 ## Step 5: V2 RSS protocol — SC-004 (2 min)
 
-In a second terminal while app holds 10k load:
+**Preferred (full audit):** `./scripts/measure-resources.sh 10000 60` — samples RSS each second, reports peak/VmHWM, PASS/FAIL vs 150 MB. Use `RUST_FEH_START_FOLDER` with a fixture path to auto-load on startup.
+
+**Quick spot-check** while app holds 10k load:
 
 ```bash
 # Sample 3 times during scroll
@@ -102,6 +104,8 @@ In a second terminal while app holds 10k load:
 ```
 
 Convert KB → MB: divide by 1024. Record **peak** value.
+
+**Recorded audit (2026-06-22):** ~124 MB @1k images, ~126 MB @10k — see [validation-results.md](./validation-results.md).
 
 | Peak RSS (MB) | Verdict |
 |---------------|---------|

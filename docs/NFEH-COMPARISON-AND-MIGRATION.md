@@ -184,7 +184,7 @@ See [README.md](../README.md) for Rust/rustup setup.
 |-----------|------|----------|
 | Thin wrapper over feh | Named only | Constitution §I — delegate view/wallpaper to feh |
 | GUI vs core separation | React components + MobX store | `scanner`, `image_proc`, `tool_caps`, `ui_logic` vs `main.rs` |
-| Performance at scale | Not a design goal | Virtualized list, 10k targets, RSS &lt;150MB (validation pending) |
+| Performance at scale | Not a design goal | Virtualized list, 10k targets; SC-004 RSS &lt;150MB **pass** (~126 MB @10k, 2026-06-22 audit) |
 | Optional ImageMagick | N/A | Enhance formats; never required |
 
 ---

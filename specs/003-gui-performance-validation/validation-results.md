@@ -1,9 +1,9 @@
 # GUI Performance Validation Results
 
-**Run ID**: 2026-06-22-automated  
-**Date**: 2026-06-22T01:47:15+08:00  
-**Tester**: agent (automated tier); manual GUI pending human  
-**Environment**: Linux; display required for manual tier (not run in this session)
+**Run ID**: 2026-06-22-rss-audit  
+**Date**: 2026-06-22  
+**Tester**: agent + maintainer (automated sampling); scroll protocol not run this session  
+**Environment**: Linux (X11), metadata-only list, no thumbnails; `feh` not open during RSS samples
 
 ## Automated tier (FR-005)
 
@@ -20,39 +20,55 @@
 
 | Metric | Value | Threshold | Verdict |
 |--------|-------|-----------|---------|
-| Scroll smoothness (5s rapid drag) | pending | no freeze >500ms | **pending — needs GUI** |
-| RSS peak (MB) | pending | <150 | **pending — needs GUI** |
-| Images loaded | pending | ≥10000 | **pending — needs GUI** |
-| Layout spot check (V1) | pending | controls visible | **pending — needs GUI** |
+| Scroll smoothness (5s rapid drag) | not run | no freeze >500ms | **pending — needs GUI** |
+| RSS peak @ 1,000 images (MB) | ~124 | <150 | **pass** |
+| RSS peak @ 10,000 images (MB) | ~126 | <150 | **pass** |
+| Images loaded (SC-004 protocol) | 10,000 | ≥10,000 | **pass** |
+| Layout spot check (V1) | not run | controls visible | **pending** |
 
-### Manual handoff (no sudo — ~30 min)
+### RSS audit protocol (2026-06-22)
+
+Tools (documented in [README.md](../../README.md) Resource usage):
+
+- `./scripts/measure-resources.sh [count] [seconds]` — timed RSS/VSZ/%CPU samples + VmHWM peak + PASS/FAIL vs SC-004
+- `./scripts/sample-rss.sh` — one-shot RSS (KB)
+- `RUST_FEH_START_FOLDER=/path ./rust-feh` — auto-load folder on startup (test hook in `src/main.rs`)
+
+**Conditions:**
+
+- Release binary `./rust-feh` or `target/release/rust-feh`
+- Synthetic fixtures via `./scripts/generate-perf-fixture.sh`
+- Metadata-only inventory (no thumbnail decode)
+- `feh` runs as a **separate process** when viewing — its RSS is **not** included in `rust-feh` samples
+
+**Recorded peaks (this machine):**
+
+| Images in fixture | RSS peak | SC-004 goal | Verdict |
+|-------------------|----------|-------------|---------|
+| 1,000 | ~124 MB | < 150 MB | pass |
+| 10,000 | ~126 MB | < 150 MB | pass |
+
+Evidence captures: `docs/assets/readme-resource-measure.png`, `docs/assets/readme-resource-ps.png`.
+
+## Fixture
+
+- Generator: `scripts/generate-perf-fixture.sh`
+- 10k path: regenerate with `./scripts/generate-perf-fixture.sh 10000` (ephemeral under `/tmp`)
+
+## Gap audit update
+
+- [ ] Updated 001 gap-audit SC-002 validated: **pending** (scroll protocol not run)
+- [x] Updated 001 gap-audit SC-004 validated: **pass** (2026-06-22 — RSS audit above)
+
+## Notes
+
+- SC-004 closed for feature 001 with scripted RSS evidence; subjective SC-002 scroll still open.
+- If scroll/RSS inconclusive on other hardware (VM/software GL), document in `spec.md` Clarifications before waiving (007 FR-006).
+- Remaining manual handoff for SC-002 only:
 
 ```fish
 cd /home/kkk/Apps/rust-feh
 ./scripts/run-003-gui-session.sh
-# or manually:
-set FIXTURE (./scripts/generate-perf-fixture.sh 10000)
-./rust-feh
-# 1. Choose folder → $FIXTURE → wait for scan
-# 2. Confirm Showing 10000 / 10000
-# 3. Rapid scrollbar drag 5s → record scroll verdict
-# 4. In another terminal: ./scripts/sample-rss.sh (3×) → peak MB
-# 5. Update this file + 001 gap-audit SC-002/SC-004 validated columns
+# or: set FIXTURE (./scripts/generate-perf-fixture.sh 10000); ./rust-feh
+# Step 4 quickstart: 5s rapid scrollbar drag → record pass/fail/inconclusive
 ```
-
-## Fixture
-
-- Path: `/tmp/rust-feh-perf-PEWpwP` (regenerate with `./scripts/generate-perf-fixture.sh 10000`)
-- Count verified: 10000 files (T005)
-- Generator: `scripts/generate-perf-fixture.sh`
-
-## Gap audit update
-
-- [ ] Updated 001 gap-audit SC-002 validated: pending (awaiting manual scroll)
-- [ ] Updated 001 gap-audit SC-004 validated: pending (awaiting RSS samples)
-
-## Notes
-
-- Automated prerequisites complete 2026-06-22; features 005/008/009 shipped since plan authored.
-- If scroll/RSS inconclusive (VM/software GL), document in `spec.md` Clarifications before marking pass in gap-audit (007 FR-006).
-- Estimated manual protocol: ~30–45 min per quickstart Steps 2–8.
