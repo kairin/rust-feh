@@ -9,9 +9,9 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2 pinned to SHA for Codacy compliance
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@be73d7920c329f220ce78e7b5dd08e46e4b5a6e3  # pinned to SHA for stable (Codacy requires full commit SHA, not tag)
         with:
           components: clippy
 
