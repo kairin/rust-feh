@@ -1,20 +1,30 @@
-# Copy this file to .envrc.local and fill in real values.
+# shellcheck shell=bash
+# Copy to .envrc.local and adjust token file paths for this machine.
 #   cp .envrc.local.example .envrc.local
 # Then: direnv allow
 #
 # .envrc.local is gitignored — never commit API tokens or passwords.
+# Parent Apps/.envrc.local already loads GH, HF, and Codacy account tokens.
 
-# --- GitHub (gh CLI, MCP, CI) ---
-# export GITHUB_TOKEN="ghp_..."
-# export GH_TOKEN="${GITHUB_TOKEN}"
+load_secret() {
+  local var_name="$1"
+  local token_file="$2"
+  local value
 
-# --- AI / agent tooling (if you use them in this workspace) ---
-# export OPENAI_API_KEY="sk-..."
-# export ANTHROPIC_API_KEY="sk-ant-..."
-# export XAI_API_KEY="xai-..."
+  if [ -r "$token_file" ]; then
+    value="$(LC_ALL=C tr -d '\000\r\n' < "$token_file")"
+    export "$var_name=$value"
+  fi
+}
 
-# --- Codacy / other dev services ---
-# export CODACY_API_TOKEN="..."
+# --- Codacy CLI (project-level overrides) ---
+# Create the project token in Codacy UI, then save it to the path below.
+# Clear parent Apps default (my-comfyui-nodes) before loading this project's token.
+unset CODACY_PROJECT_TOKEN
+load_secret CODACY_PROJECT_TOKEN "/home/kkk/.codacy/kairin-rust-feh.project-token"
+export CODACY_ORGANIZATION_PROVIDER="gh"
+export CODACY_USERNAME="kairin"
+export CODACY_PROJECT_NAME="rust-feh"
 
 # --- Optional overrides ---
 # export RUST_LOG="rust_feh=debug"
