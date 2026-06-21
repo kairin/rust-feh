@@ -6,6 +6,26 @@ Linux-first **feh orchestrator**: browse and select images at scale in a lightwe
 
 **Not a feh replacement** — the GUI owns folder scan, filter, sort, and launch; **feh** owns the viewer.
 
+## Why rust-feh? (Security)
+
+rust-feh exists because the legacy **nfeh** (archived at `archive/original-nfeh/`) was both functionally obsolete and a security risk. Codacy scanning of the archived codebase revealed **4 HIGH-severity CVEs** in its 2016-era npm dependency tree — all in `minimatch@3.0.3`:
+
+| CVE | Issue | Severity |
+|-----|-------|----------|
+| CVE-2026-26996 | Denial of Service via crafted glob patterns | HIGH |
+| CVE-2026-27904 | Catastrophic backtracking / ReDoS in glob expressions | HIGH |
+| CVE-2022-3517 | ReDoS via braceExpand function | HIGH |
+| CVE-2026-27903 | Unbounded recursive backtracking via crafted glob patterns | HIGH |
+
+Patching was infeasible — the entire dependency chain (Electron 1.x, React 15, MobX, webpack 2) is end-of-life and unmaintainable. Rather than patch holes in abandonware, rust-feh was written from scratch as a **modern, safe Rust application**:
+
+- **Pure Rust** — no npm, no transitive JS dependency chains, minimal attack surface
+- **No network access** — entire classes of vulnerabilities eliminated by design
+- **Auditable deps** — egui, eframe, walkdir, image crate, rfd, which. All known, verifiable crates
+- **Sandboxed feh integration** — external viewer runs as an unprivileged subprocess
+
+The archived nfeh codebase is preserved only as a reference snapshot and will be removed once rust-feh is fully verified. See [issue #35](https://github.com/kairin/rust-feh/issues/35) for the full audit trail.
+
 ## Status
 
 From-scratch Rust successor to archived **nfeh** — same broad idea (pick from a folder, act on images), different architecture: feh is actually invoked, lists scale to 10k+ images, and the runtime is a single native binary (egui/eframe, no Electron).
