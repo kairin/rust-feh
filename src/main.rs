@@ -91,6 +91,7 @@ fn main() -> eframe::Result<()> {
                 session_status_open: false,
                 format_discovery_open: !tools_panel_ok,
                 format_route_open: HashSet::new(),
+                start_folder_loaded: false,
             }) as Box<dyn App>)
         }),
     )?;
@@ -136,6 +137,8 @@ struct RustFehApp {
     deps_section_open: bool,
     format_discovery_open: bool,
     format_route_open: HashSet<String>,
+    /// Dev/test: auto-load `RUST_FEH_START_FOLDER` once on first frame.
+    start_folder_loaded: bool,
 }
 
 struct ScanComplete {
@@ -171,6 +174,31 @@ impl RustFehApp {
             self.current_dir = Some(dir.clone());
             self.scan_directory(&dir);
         }
+    }
+
+    /// Test hook: `RUST_FEH_START_FOLDER=/path` auto-loads on first frame (resource/perf scripts).
+    fn maybe_load_start_folder(&mut self) {
+        if self.start_folder_loaded {
+            return;
+        }
+        self.start_folder_loaded = true;
+        let Ok(dir) = std::env::var("RUST_FEH_START_FOLDER") else {
+            return;
+        };
+        let path = PathBuf::from(&dir);
+        if !path.is_dir() {
+            self.log(format!(
+                "RUST_FEH_START_FOLDER ignored (not a directory): {}",
+                path.display()
+            ));
+            return;
+        }
+        self.log(format!(
+            "Auto-loading RUST_FEH_START_FOLDER: {}",
+            path.display()
+        ));
+        self.current_dir = Some(path.clone());
+        self.scan_directory(&path);
     }
 
     fn feh_button(ui: &mut egui::Ui, label: &str, available: bool, enabled: bool) -> egui::Response {
@@ -1149,6 +1177,7 @@ impl RustFehApp {
 
 impl App for RustFehApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.maybe_load_start_folder();
         self.poll_scan_complete(ctx);
 
         STARTUP_NOTICE.call_once(|| {
