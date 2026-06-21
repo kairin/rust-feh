@@ -132,7 +132,7 @@ Backed by code and tests:
 ## Claims to avoid until validated or implemented
 
 - "Smooth 60fps scroll at 10k" — SC-002 manual validation pending (spec 003)
-- "Under 150MB RSS at 10k" — SC-004 manual validation pending
+- "Under 150MB RSS at 10k" — **validated** SC-004 pass (2026-06-22): ~126 MB peak @10k, ~124 MB @1k — see [README](../README.md) Resource usage and [003 validation-results](../specs/003-gui-performance-validation/validation-results.md)
 - "ImageMagick powers convert/view for exotic formats" — routing documented; subprocess not wired
 - "Drop-in nfeh replacement" — different UX, requires feh, no thumbnail grid
 

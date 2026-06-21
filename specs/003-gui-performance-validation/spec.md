@@ -4,9 +4,9 @@
 
 **Created**: 2026-06-21
 
-**Status**: In progress (automated tier pass; manual GUI pending)
+**Status**: In progress (automated tier pass; SC-004 RSS **pass** 2026-06-22; SC-002 scroll pending)
 
-**Input**: Outstanding **Bucket C** from feature 001 — SC-002 (60fps scroll) and SC-004 (RSS &lt;150MB @10k images) remain **validated: pending** after automated substitutes (T067). Adversarial review ST-01, ST-10 unrun.
+**Input**: Outstanding **Bucket C** from feature 001 — SC-004 (RSS &lt;150MB @10k) **validated: pass** (~126 MB peak @10k). SC-002 (60fps scroll) still **pending**. Evidence: [validation-results.md](./validation-results.md), [README](../../README.md) Resource usage.
 
 **Parent**: [001-persistent-ui-virtual-browsing](../001-persistent-ui-virtual-browsing/spec.md) (US2, SC-002, SC-003, SC-004)
 

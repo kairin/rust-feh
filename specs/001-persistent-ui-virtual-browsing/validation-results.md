@@ -9,8 +9,8 @@
 | Checks failed | 0 |
 | cargo test | pass |
 | SC-003 filter 10k <200ms | see test sc003_filter_10k_under_200ms |
-| SC-004 RSS <150MB | manual GUI only — not automated |
-| SC-002 60fps scroll | manual GUI only — not automated |
+| SC-004 RSS <150MB | **pass** — peak ~126 MB @10k, ~124 MB @1k (2026-06-22; see 003 validation-results) |
+| SC-002 60fps scroll | manual GUI only — **pending** |
 
 ## Quickstart mapping
 
@@ -29,6 +29,6 @@
 
 ## GUI tier (feature 003)
 
-Manual scroll (SC-002) and RSS (SC-004) validation: [specs/003-gui-performance-validation/validation-results.md](../003-gui-performance-validation/validation-results.md)
+RSS audit (SC-004 **pass**): [specs/003-gui-performance-validation/validation-results.md](../003-gui-performance-validation/validation-results.md). Scroll (SC-002) still pending.
 
 Runbook: [specs/003-gui-performance-validation/quickstart.md](../003-gui-performance-validation/quickstart.md) · Entry: `./scripts/validate-gui-performance.sh`

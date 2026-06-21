@@ -37,7 +37,7 @@ Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of 
 | Feature | Outstanding source | What it covers |
 |---------|-------------------|----------------|
 | [002-feh-runtime-detection](./002-feh-runtime-detection/spec.md) | A5 | Re-check feh after install without restart |
-| [003-gui-performance-validation](./003-gui-performance-validation/spec.md) | Bucket C | Automated tier **pass** (2026-06-22); manual SC-002/SC-004 GUI session **pending** |
+| [003-gui-performance-validation](./003-gui-performance-validation/spec.md) | Bucket C | Automated tier **pass**; SC-004 RSS **pass** (2026-06-22); SC-002 scroll **pending** |
 | [004-scanner-resilience](./004-scanner-resilience/spec.md) | Bucket D | **Absorbed by [011](./011-browsing-experience-round/spec.md)** (scan warnings + t069) |
 | [011-browsing-experience-round](./011-browsing-experience-round/spec.md) | Dogfood SMB | feh filelist, background scan, Activity log — **shipped** (automated pass; manual V1/V2/V4 pending) |
 | [012-ui-feedback-polish](./012-ui-feedback-polish/spec.md) | Dogfood UI screenshots | Status animation, NAS scan policy, deps collapse, bottom tips, detach log — **shipped** (automated pass; manual V1–V5 pending) |
@@ -57,7 +57,7 @@ Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of 
 | **A** | A1–A4 | Docs synced (T066) | *(none — maintenance on 001 artifacts)* | — |
 | **A** | A5 | Specified | [009](./009-external-tool-runtime/spec.md) (supersedes [002](./002-feh-runtime-detection/spec.md)) | P2 |
 | **B** | B1, B2 | Fixed (T065, T069) | *(none)* | — |
-| **C** | SC-002, SC-004 | Automated pass; manual GUI pending | [003](./003-gui-performance-validation/spec.md) | P1 |
+| **C** | SC-002, SC-004 | SC-004 RSS **pass**; SC-002 scroll pending | [003](./003-gui-performance-validation/spec.md) | P1 |
 | **C** | V1–V10 manual gaps | Partially automated (T067) | **003** + `validate-feature-001.sh` | P1 |
 | **D** | Scanner non-permission errors | **Shipped in 011** | [011](./011-browsing-experience-round/spec.md) (supersedes 004 scope) | — |
 | **D** | T055 / FR-015 extension | T068 + T069 done | **011** | — |
@@ -80,7 +80,7 @@ Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of 
 
 ## Recommended implement order
 
-1. **003** — Manual GUI session (SC-002 scroll + SC-004 RSS); automated tier **pass**  
+1. **003** — SC-004 RSS **done**; finish SC-002 scroll manual session
 2. **012** — Manual SMB GUI (V1–V5 in [quickstart](./012-ui-feedback-polish/quickstart.md)); automated tier **pass**  
 3. **006** — Window/viewer stability (retroactive; not started)  
 4. ~~005, 008, 009, 011, 012~~ — **complete** (2026-06-22)  
@@ -109,7 +109,7 @@ Change order only after **advisory consultation** and update this file + `.speci
 | Artifact | Action |
 |----------|--------|
 | `plan.md` | Status → "code landed; validation via 003" |
-| `gap-audit.md` | Update validated column when **003** completes |
+| `gap-audit.md` | SC-004 **pass** (2026-06-22); SC-002 pending until scroll session |
 | `data-model.md` | Extend when **005** / **006** land |
 | `outstanding-issues.md` | Points here; do not reopen B1/B2 |
 

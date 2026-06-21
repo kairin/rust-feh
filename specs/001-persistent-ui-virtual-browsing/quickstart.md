@@ -40,9 +40,9 @@ Replaces most manual steps in V1–V10:
 
 Runs `cargo build --release`, `cargo clippy`, `cargo test` (including `tests/feature_001_validation.rs`), and static FR checks. Results: `validation-results.md`.
 
-**Not automated** (optional manual): SC-002 smooth 60fps scroll feel, SC-004 RSS while GUI is open.
+**Not automated** (optional manual): SC-002 smooth 60fps scroll feel — **pending**. SC-004 RSS — **pass** (2026-06-22: ~126 MB @10k; see [003 validation-results](../003-gui-performance-validation/validation-results.md)).
 
-**GUI performance runbook (feature 003):** [specs/003-gui-performance-validation/quickstart.md](../003-gui-performance-validation/quickstart.md) — 10k fixture, scroll protocol, RSS sampling, `validation-results.md`.
+**GUI performance runbook (feature 003):** [specs/003-gui-performance-validation/quickstart.md](../003-gui-performance-validation/quickstart.md) — 10k fixture, scroll protocol, `./scripts/measure-resources.sh`, `validation-results.md`.
 
 ```fish
 ./scripts/validate-gui-performance.sh

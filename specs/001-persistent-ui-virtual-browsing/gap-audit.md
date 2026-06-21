@@ -1,13 +1,13 @@
 # Gap Audit: Persistent UI Layout & Virtual Browsing
 
 **Feature**: `001-persistent-ui-virtual-browsing`
-**Updated**: 2026-06-21 (automated validation via `scripts/validate-feature-001.sh`)
+**Updated**: 2026-06-22 (SC-004 RSS audit via `scripts/measure-resources.sh`; SC-002 scroll pending)
 
 ## Summary
 
 | Code | Validated (auto) | Validated (manual) |
 |------|------------------|------------------|
-| 15 pass | 12 pass | SC-002, SC-004 pending (GUI scroll/RSS) |
+| 15 pass | 12 pass | SC-004 **pass** (RSS); SC-002 **pending** (scroll) |
 
 Run: `./scripts/validate-feature-001.sh` — see `validation-results.md`.
 
@@ -40,9 +40,9 @@ Run: `./scripts/validate-feature-001.sh` — see `validation-results.md`.
 | SC | Validated | Notes |
 |----|-----------|-------|
 | SC-001 | auto | static layout checks |
-| SC-002 | **manual** | 60fps scroll — requires GUI session |
+| SC-002 | **manual** | 60fps scroll — requires GUI session ([003 validation](../003-gui-performance-validation/validation-results.md) pending) |
 | SC-003 | auto | filter 10k <200ms test |
-| SC-004 | **manual** | RSS <150MB — requires running `./rust-feh` |
+| SC-004 | **pass** | RSS &lt;150MB @10k — **pass** 2026-06-22: peak ~126 MB @10k, ~124 MB @1k ([003 RSS audit](../003-gui-performance-validation/validation-results.md)) |
 | SC-005 | auto | v3 status test |
 | SC-006 | auto | v4 counter test |
 | SC-007 | auto | v8 feh missing test |
