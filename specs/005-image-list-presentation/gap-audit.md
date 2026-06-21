@@ -39,7 +39,7 @@
 | FR | Requirement | Status | Evidence |
 |----|-------------|--------|----------|
 | FR-008 | Flat list ↔ Folder tree toggle | **pass** | View toggle in toolbar; `list_view_mode` state |
-| FR-009 | Expandable folders + per-folder counts | **pass** | `listed_count` = `NativeListed` in subtree (SC-005); per-folder skipped deferred to **004** |
+| FR-009 | Expandable folders + per-folder counts | **pass** | `listed_count` = `NativeListed` in subtree (SC-005); per-folder skipped counts not implemented |
 | FR-010 | Inventory summary after scan | **pass** | `format_inventory_bar` in central panel |
 | FR-011 | awaiting / magick_detected rules | **pass** | Clarified 2026-06-22: `awaiting` = `MagickDetected` count; native `*_processed.*` does not affect `magick_detected` |
 | FR-012 | Converted via `{stem}_processed.*` | **pass** | `detect_converted_status`, `finalize_scan_entries` |
@@ -74,7 +74,7 @@ Manual: expand/collapse + flat toggle preserves selection — implemented; selec
 | Per-folder `skipped_count` in tree | Scanner tracks total only; root folder line shows `non_image_skipped` |
 | Thumbnail column | Area 4 — out of scope |
 | Metadata sort | Area 6 — deferred |
-| ImageMagick convert pipeline | Feature 010 |
+| ImageMagick convert pipeline | Not implemented (no follow-on feature committed) |
 
 ## Adversarial remediation (T048–T054)
 
@@ -84,7 +84,7 @@ Manual: expand/collapse + flat toggle preserves selection — implemented; selec
 | FR-011 native converted | Spec + data-model clarified; `native_converted_fr011` test |
 | Post-resize inventory | `refresh_entry_and_inventory` in `main.rs` after Quick resize |
 | Magick `which()` per file | Binary cached once per `scan_images` call |
-| Per-folder skipped | Deferred to **004** (documented in spec) |
+| Per-folder skipped | Not implemented (root shows aggregate only) |
 | Magick heic integration | `#[ignore]` test when ImageMagick absent |
 
 See [adversarial-review.md](./adversarial-review.md).

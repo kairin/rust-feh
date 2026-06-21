@@ -25,7 +25,7 @@ Panel legend (main.rs): *"Scan = native listed or magick-detected (inventory bar
 
 **Alternatives considered**:
 - Static brochure text — rejected (FR-008 dynamic)
-- Claim all exotic extensions are scanned — rejected until 010 convert bridge
+- Claim all exotic extensions are scanned — rejected (convert bridge not implemented)
 
 ## R3: Install copy commands
 

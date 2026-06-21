@@ -127,11 +127,11 @@ Consolidated in [research.md](./research.md).
 | **001** | Persistent layout; FR-008a status complements panel |
 | **005** | Inventory bar labels; format notes aligned (T046 done) |
 | **009** | Recheck in Tools menu; spawn failure → `feh_available` sync |
-| **010** (future) | Convert pipeline execution — panel documents only |
+| Convert pipeline execution | Not implemented — panel documents routing only |
 
 ## Deferred / out of scope
 
-- ImageMagick convert subprocess execution (010)
+- ImageMagick convert subprocess execution (not implemented)
 - Non-apt install strings (other distros)
 - Scanner extension expansion beyond 005 identify
 - Moving panel logic into separate egui widget crate

@@ -126,7 +126,7 @@ A user resizes the window wider than the image list needs. The capabilities pane
 
 - **Retroactive**: Panel and `tool_caps` module largely shipped — implement phase is **verify + gap-fill + gap-audit**.
 - Linux apt install strings are the default; other distros are out of scope for install copy text.
-- ImageMagick **subprocess convert** is out of scope for this feature — panel documents routing; execution is feature 010+.
+- ImageMagick **subprocess convert** is out of scope for this feature — panel documents routing only (no execution pipeline implemented).
 - Scanner extension expansion for exotic formats is out of scope — format section may describe planned routing with honest scan notes.
 - Recheck behavior is owned by feature **009**; this feature requires panel to **display** updated state after recheck.
 - Depends on feature 001 layout (persistent panels, central list).

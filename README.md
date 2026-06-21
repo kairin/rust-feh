@@ -165,7 +165,7 @@ Then you can run `./rust-feh` from the root.
 - **Background scanning**: UI stays responsive on large or network paths; NAS/GVFS scans skip ImageMagick identify
 - **Session status** scan pulse + animated dots during scan
 
-More coming: thumbnail grid, full image tools dialog, multi-select, keyboard navigation, config persistence.
+Further work is possible in areas such as thumbnail grid, richer tools, or config, but no specific features are committed.
 
 ## Architecture (high level)
 

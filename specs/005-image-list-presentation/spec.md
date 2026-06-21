@@ -25,7 +25,7 @@
 - Q: What does FR-011 “awaiting = magick − converted” mean when native files become Converted? → A: **`awaiting_convert`** = count of `FileStatus::MagickDetected` entries. **`magick_detected`** = `awaiting_convert` plus `Converted` entries whose extension is **not** in the native scanner set. The UX mockup line “magick − converted” applies to **magick-origin** converted files only, not native `*_processed.*` conversions.
 - Q: What does tree folder “N listed” mean vs inventory `native_listed` (SC-005)? → A: **Same metric** — per-folder **listed** = count of `NativeListed` entries in that subtree. Magick and converted rows appear as file lines but do not increment **listed**. Root folder **skipped** shows scan-wide `non_image_skipped`; per-subfolder skipped counts deferred to feature **004**.
 - Q: After Quick resize without full rescan? → A: App **incrementally updates** the selected entry’s `FileStatus` and rebuilds `ScanInventory` when `{stem}_processed.*` is detected. Full rescan still refreshes the entire list (e.g. new `*_processed.*` artifact rows).
-- Q: Per-folder non-image skipped on tree lines? → A: **Deferred** — only root folder line shows total `non_image_skipped` until **004-scanner-resilience** adds per-folder walk stats.
+- Q: Per-folder non-image skipped on tree lines? → A: Not implemented — only root folder line shows total `non_image_skipped`; per-folder walk stats not added.
 
 ## UX Reference: Folder Tree & Inventory (target layout)
 
@@ -171,7 +171,7 @@ After scanning, a user wants totals: how many native images were listed, how man
 - No folder loaded — list empty; sort/filter disabled; inventory hidden.
 - Filter zero matches — counter shows 0 / N; tree shows empty or "no matches" state.
 - Very long paths — truncate display with ellipsis in plan phase if needed; full path still in selection/status.
-- ImageMagick absent — magick-detected counts stay 0; heic/svg files may be invisible to list until feature 010 scanner extension.
+- ImageMagick absent — magick-detected counts stay 0; heic/svg files may be invisible to list until/unless convert support is added later.
 - 10k+ tree nodes — tree view MUST remain responsive (lazy expand or virtualize in plan); flat list remains default for huge sets if perf requires.
 - Folder with only non-image files — shows in tree with skipped count; no selectable image rows.
 - Duplicate filenames in same folder — each row remains unique by full path.
@@ -223,9 +223,9 @@ After scanning, a user wants totals: how many native images were listed, how man
 
 - US1–US5 shipped; adversarial remediation (2026-06-22) aligned tree counts, FR-011, and post-resize inventory refresh.
 - Thumbnail column out of scope (Area 4).
-- Metadata sort (size, date) deferred to Area 6.
+- Metadata sort (size, date) not implemented.
 - Depends on feature 001 virtualization and scan root (`current_dir`).
-- Magick-detected scan requires ImageMagick on PATH (feature 009); full convert pipeline deferred to feature 010+.
+- Magick-detected scan requires ImageMagick on PATH (feature 009); full convert pipeline not implemented.
 - Non-image counting walks all files when enabled — may increase scan time; plan phase sets perf budget.
 - Default view mode after load: **Flat list** (current behavior) unless user switches to tree.
 

@@ -28,7 +28,7 @@ rust-feh is the **spiritual successor** to nfeh: same product idea (pick images 
 
 | You want… | Stay on archived nfeh | Use rust-feh |
 |-----------|----------------------|--------------|
-| Visual thumbnail grid in a tiny fixed window | ✓ (only jpg/png/jpeg) | ✗ (list view today; grid planned) |
+| Visual thumbnail grid in a tiny fixed window | ✓ (only jpg/png/jpeg) | ✗ (list view today; grid not implemented) |
 | Browse 1,000+ images with filter/sort | ✗ (sync glob + per-file sizing) | ✓ (virtualized metadata list) |
 | Real **feh** viewer with keyboard nav | ✗ | ✓ |
 | Wallpaper without installing feh | ✓ (Node wallpaper API) | ✗ (requires `feh` on PATH) |
@@ -60,12 +60,12 @@ rust-feh is the **spiritual successor** to nfeh: same product idea (pick images 
 |------------|------|----------|-------|
 | **Folder picker** | Electron `dialog.showOpenDialog` | `rfd` native dialog | Both native OS dialogs |
 | **Discover images** | `glob` sync `**/*.{jpg,png,jpeg}` | `walkdir` + extension filter | rust-feh: jpg, jpeg, png, webp, gif, bmp |
-| **Display previews** | `<img>` + `legit-image` + `react-lazyload` | No thumbnails — filename list | rust-feh Area 4 / README roadmap |
+| **Display previews** | `<img>` + `legit-image` + `react-lazyload` | No thumbnails — filename list | rust-feh (no grid; list UX by design) |
 | **Read dimensions** | `image-size` per file (for sort) | Not yet (lazy metadata deferred) | nfeh sorts by aspect ratio |
 | **View full image** | Click thumbnail (in-app only) | Spawn **feh** (`--geometry 1280x960 --scale-down --zoom max`) | feh is the real viewer in rust-feh |
 | **Slideshow / navigate** | N/A | feh (folder passed as filelist context) | |
 | **Set wallpaper** | `@fa7ad/wallpaper`.set(path) | `feh --bg-fill` | **Different backends** — scaling/fit may differ |
-| **Resize / convert** | Not implemented | `image` crate demo (50% → JPG) | ImageMagick planned, not invoked yet |
+| **Resize / convert** | Not implemented | `image` crate demo (50% → JPG) | ImageMagick for exotic (not invoked yet) |
 | **feh** | Package dep only (`package.json`) | Required for view + wallpaper | rust-feh degrades gracefully if missing |
 | **ImageMagick** | Not referenced | Optional; shown in capabilities panel | `magick` or `convert` on PATH |
 | **bash** | Linux package dep | Not required by app | nfeh packaging artifact |
@@ -80,7 +80,7 @@ rust-feh documents operation speed in the **Tools & capabilities** side panel (`
 | Open / slideshow / navigate | feh | Fast (subprocess + GPU) |
 | Set wallpaper | feh | Fast |
 | Quick resize (jpg/png/webp) | `image` crate | Medium |
-| Exotic format view (svg/heic/raw…) | ImageMagick → feh | Slower (planned; detection only today) |
+| Exotic format view (svg/heic/raw…) | ImageMagick → feh | Slower (not implemented; detection only today) |
 
 nfeh has **no** documented performance model. Architecturally it runs synchronous `glob.sync` on each MobX-driven render and reads dimensions for every file — workable for small folders, not for 10k trees.
 
@@ -92,7 +92,7 @@ nfeh has **no** documented performance model. Architecturally it runs synchronou
 |---------|------|----------|--------|
 | Choose folder | ✓ | ✓ | ✓ |
 | Recursive subfolders | ✓ (glob `**`) | ✓ (toggle) | ✓ |
-| Thumbnail gallery | ✓ (120px max, lazy) | ✗ (virtual list) | **Regression** (intentional; grid planned) |
+| Thumbnail gallery | ✓ (120px max, lazy) | ✗ (virtual list) | **Regression** (intentional; grid not implemented) |
 | Sort by aspect ratio | ✓ | ✗ (Path / Name / Folder) | Different |
 | Filter / search | ✗ | ✓ (path + filename) | **New** |
 | Folder column in list | ✗ | ✓ | **New** |
@@ -120,7 +120,7 @@ nfeh has **no** documented performance model. Architecturally it runs synchronou
 | tiff, pnm | ✗ | ✗ | feh (if opened elsewhere) | Not scanned |
 | svg, heic, raw, psd | ✗ | ✗ | Documented in `tool_caps` only | Not implemented |
 
-The capabilities panel describes **planned routing** for exotic formats. Only the first row is fully wired end-to-end today.
+The capabilities panel describes routing for exotic formats (where supported). Only the first row is fully wired end-to-end today.
 
 ---
 
@@ -191,7 +191,7 @@ See [README.md](../README.md) for Rust/rustup setup.
 
 ## Known intentional differences
 
-1. **No in-app thumbnails** — rust-feh uses metadata-only list for memory and speed; thumbnail grid is on the roadmap ([README](../README.md), Area 4 in feature 001 spec).
+1. **No in-app thumbnails** — rust-feh uses metadata-only list for memory and speed; thumbnail grid is not implemented.
 2. **feh is required** for wallpaper in rust-feh; nfeh used a Node wallpaper module.
 3. **No default `~/Pictures`** — rust-feh starts with no folder until user picks one.
 4. **Larger, resizable window** — nfeh was a fixed 480×480 picker; rust-feh targets browsing workflows.
@@ -203,8 +203,8 @@ See [README.md](../README.md) for Rust/rustup setup.
 
 | Topic | Where to track |
 |-------|----------------|
-| Thumbnail grid | README "More coming"; spec Area 4 |
-| Full image tools | spec Area 7; `tool_caps` format matrix |
+| Thumbnail grid | Not implemented |
+| Full image tools | Not implemented (basic quick resize + feh delegation only) |
 | ImageMagick integration | `src/image_proc.rs` comment; capabilities panel |
 | Window / feh policy | `specs/006-window-viewer-stability/` |
 | List UX formalization | `specs/005-image-list-presentation/` |
@@ -217,7 +217,7 @@ See [README.md](../README.md) for Rust/rustup setup.
 
 - Original nfeh sources live in `archive/original-nfeh/` for reference and credit.
 - README states the archive is removed only after rust-feh is fully verified.
-- This comparison doc should be updated when thumbnails, ImageMagick pipelines, or wallpaper modes ship.
+- This comparison doc should be updated if/when additional features such as thumbnails or expanded ImageMagick support are implemented.
 
 ---
 
@@ -226,7 +226,7 @@ See [README.md](../README.md) for Rust/rustup setup.
 - **nfeh** — [fa7ad/nfeh](https://github.com/fa7ad/nfeh), MIT/X11, Electron abandonware (see archived README warning).
 - **rust-feh** — New MIT implementation; no Electron/React code carried over.
 - **feh** — [feh](https://feh.finalrewind.org/) image viewer (required external tool in rust-feh).
-- **ImageMagick** — Optional format bridge (planned).
+- **ImageMagick** — Optional format detection (full pipelines not implemented).
 
 ---
 

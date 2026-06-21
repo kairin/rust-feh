@@ -20,7 +20,6 @@
     "specs/006-window-viewer-stability"
   ],
   "superseded": {
-    "specs/002-feh-runtime-detection": "specs/009-external-tool-runtime",
-    "proposed-011-feh-launch-orchestration": "specs/011-browsing-experience-round"
+    "specs/002-feh-runtime-detection": "specs/009-external-tool-runtime"
   }
 }

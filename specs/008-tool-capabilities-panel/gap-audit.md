@@ -10,7 +10,7 @@
 |----|-------------|--------|----------|
 | FR-001 | Persistent Tools & capabilities panel | **pass** | `SidePanel::right("tool_caps")` L584–594; always shown in `update()` |
 | FR-002 | feh required with state + role | **pass** | `dependencies()` feh row; `render_tool_caps_panel` L216–252 |
-| FR-003 | ImageMagick optional with state + role | **pass** | `dependencies()` ImageMagick row; role mentions magick-detect + convert (010) |
+| FR-003 | ImageMagick optional with state + role | **pass** | `dependencies()` ImageMagick row; role mentions magick-detect + convert (not implemented) |
 | FR-004 | apt install commands when missing | **pass** | `sudo apt install feh` / `imagemagick` in `DependencyStatus` |
 | FR-005 | Copy install command to clipboard | **pass** | `ctx.copy_text` + `Copied install command for {name}` status L242–245 |
 
@@ -77,7 +77,7 @@
 |-------|-----------------|--------|
 | Tools & capabilities panel (messaging emphasis) | Panel title + right SidePanel | **pass** |
 | Division of labor table (browse/feh/wallpaper/resize/exotic) | `operation_timings()` rows | **pass** |
-| ImageMagick optional; convert not wired | Notes reference 010 / awaiting convert | **pass** |
+| ImageMagick optional; convert not wired | Notes reference awaiting convert (detection only) | **pass** |
 | Dependency detection + apt hints | Dependencies section + Copy | **pass** |
 | Honest live vs planned | No false convert-running claims | **pass** |
 
@@ -103,7 +103,7 @@
 |------|-------|
 | Tools menu Recheck | **009** T008 |
 | Spawn failure → `feh_available` sync | **009** T010 |
-| ImageMagick convert subprocess | **010** |
+| ImageMagick convert subprocess | Not implemented |
 | Non-apt install strings | Out of scope per spec |
 
 ## Verdict
