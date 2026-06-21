@@ -123,9 +123,12 @@ fn main() {
 
         let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
         if on_wayland {
-            eprintln!("[rust-feh] Wayland was detected (WAYLAND_DISPLAY is set).");
-            eprintln!("[rust-feh] The winit backend failed to connect (likely no compositor available).");
-            eprintln!("[rust-feh] Retrying with X11 backend as fallback...");
+            eprintln!("[rust-feh] Wayland environment detected (WAYLAND_DISPLAY set).");
+            eprintln!("[rust-feh] Native Wayland backend failed to connect (this happens when no compositor is available,");
+            eprintln!("[rust-feh] e.g. some SSH sessions, broken sockets, or misconfigured Wayland setups).");
+            eprintln!("[rust-feh] Most real Wayland desktops (GNOME, KDE Plasma, Sway, Hyprland, etc.) work great with");
+            eprintln!("[rust-feh] native Wayland when a compositor is running.");
+            eprintln!("[rust-feh] Retrying with X11 backend (XWayland) as fallback...");
 
             std::env::set_var("WINIT_UNIX_BACKEND", "x11");
 
@@ -153,13 +156,15 @@ fn main() {
             ) {
                 eprintln!("[rust-feh] X11 fallback also failed: {}", err2);
                 eprintln!("[rust-feh] No usable display server found.");
-                eprintln!("[rust-feh] Ensure X11 is running or a Wayland compositor (e.g. GNOME, KDE, sway) is active.");
+                eprintln!("[rust-feh] For normal Wayland use: make sure a compositor is active (e.g. start from a login manager).");
+                eprintln!("[rust-feh] You can also force X11 manually:  WINIT_UNIX_BACKEND=x11 ./rust-feh");
                 std::process::exit(1);
             }
-            // X11 succeeded; app is running
+            // X11 succeeded; app is running (via fallback)
+            eprintln!("[rust-feh] Running via X11 fallback this time. Native Wayland works on standard desktop compositors.");
             return;
         } else {
-            eprintln!("[rust-feh] No Wayland detected. Ensure a display (X11 or Wayland) is available.");
+            eprintln!("[rust-feh] No Wayland detected. Ensure a display (X11 or Wayland compositor) is available.");
             eprintln!("[rust-feh] Check DISPLAY and/or WAYLAND_DISPLAY environment variables.");
             std::process::exit(1);
         }
