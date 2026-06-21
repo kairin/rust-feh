@@ -1,0 +1,105 @@
+{
+  "name": "nfeh",
+  "version": "1.1.0",
+  "description": "Tiny GUI for feh",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "prebuild": "rm -rfv dist && echo Cleaned old dist && npm run bundle:prod",
+    "build": "build --linux pacman deb AppImage",
+    "postbuild": "rename-files ./dist '.pacman' '.tar.xz'",
+    "bundle": "webpack --progress",
+    "bundle:run": "webpack --progress && npm start",
+    "bundle:prod": "env NODE_ENV=production webpack --progress",
+    "bundle:watch": "webpack --progress --watch",
+    "test": "standard --parser babel-eslint src/**/*.js --verbose | snazzy",
+    "postinstall": "cd node_modules/node-sass && npm run postinstall"
+  },
+  "keywords": [
+    "wallpaper",
+    "electron"
+  ],
+  "author": "Fahad Hossain <8bit.demoncoder@gmail.com> (http://fahad.gq/)",
+  "license": "MIT",
+  "homepage": "https://github.com/fa7ad/nfeh#readme",
+  "bugs": {
+    "url": "https://github.com/fa7ad/nfeh/issues"
+  },
+  "dependencies": {
+    "@fa7ad/wallpaper": "^2.4.2-a",
+    "babel-polyfill": "^6.13.0",
+    "classnames": "^2.2.5",
+    "file-url": "^2.0.0",
+    "glob": "^7.0.6",
+    "image-size": "^0.5.0",
+    "legit-image": "^0.1.4",
+    "lodash": "^4.16.0",
+    "mobx": "^3.1.9",
+    "mobx-react": "^4.0.4",
+    "react": "^15.3.1",
+    "react-desktop": "^0.3.0",
+    "react-dom": "^15.3.1",
+    "react-dropdown": "^1.1.0",
+    "react-icons": "^2.2.5",
+    "react-lazyload": "^2.1.5"
+  },
+  "devDependencies": {
+    "babel-core": "^6.14.0",
+    "babel-eslint": "^7.1.1",
+    "babel-loader": "^7.0.0",
+    "babel-plugin-transform-decorators-legacy": "^1.3.4",
+    "babel-preset-es2015": "^6.14.0",
+    "babel-preset-react": "^6.11.1",
+    "babel-preset-stage-0": "^6.5.0",
+    "css-loader": "^0.28.1",
+    "cssnano": "^3.7.4",
+    "electron": "^1.3.5",
+    "electron-builder": "^17.3.1",
+    "extract-text-webpack-plugin": "^2.1.0",
+    "node-sass": "^4.5.2",
+    "postcss-loader": "^1.2.1",
+    "rename-files": "0.0.2",
+    "sass-loader": "^6.0.3",
+    "snazzy": "^7.0.0",
+    "standard": "^10.0.2",
+    "style-loader": "^0.17.0",
+    "webpack": "^2.5.1"
+  },
+  "build": {
+    "appId": "gq.fahad.nfeh",
+    "category": "public.app-category.utilities",
+    "asar": true,
+    "license": "MIT",
+    "files": [
+      "css/**",
+      "js/**",
+      "lib/**",
+      "index.html",
+      "main.js",
+      "package.json"
+    ],
+    "icon": "icon.icns",
+    "directories": {
+      "buildResources": "."
+    },
+    "linux": {
+      "category": "Utility",
+      "depends": [
+        "feh",
+        "bash"
+      ],
+      "target": "pacman",
+      "desktop": {
+        "Name": "nfeh",
+        "Exec": "nfeh",
+        "Icon": "nfeh",
+        "Type": "Application",
+        "Categories": "Utility;"
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fa7ad/nfeh.git"
+  }
+}

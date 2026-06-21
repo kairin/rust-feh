@@ -1,0 +1,39 @@
+[package]
+name = "rust-feh"
+version = "0.1.0"
+edition = "2021"
+authors = ["rust-feh Developers"]
+description = "Fast lightweight GUI frontend for feh with image tools"
+license = "MIT"
+repository = "https://github.com/your-org/rust-feh"
+keywords = ["feh", "image", "viewer", "gui", "wallpaper", "linux"]
+categories = ["gui"]
+
+[dependencies]
+# GUI - egui + eframe (chosen for speed, small binary, no Qt)
+# Using glow backend for easier first build on Linux (fewer graphics driver requirements than wgpu)
+eframe = { version = "0.30", features = ["glow"] } # glow for simpler Linux/OpenGL builds; switch to "default" for wgpu if needed
+egui = "0.30"
+
+# Native file dialogs
+rfd = "0.15"
+
+# FS scanning (light)
+walkdir = "2"
+
+# Image processing (resize, convert formats) - pure Rust
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "rayon"] }
+
+# Utilities
+which = "6"
+
+# For future async work (commented to keep initial compile lighter)
+# tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# flume = "0.11"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3

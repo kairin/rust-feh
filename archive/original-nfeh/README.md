@@ -1,0 +1,18 @@
+# WARNING!
+## As it stands, this is abandonware. Use at your own risk! I don't get nearly enough time to maintain this.
+
+> **Successor:** This tree is archived. Active development continues as **rust-feh** in the repo root. See [docs/NFEH-COMPARISON-AND-MIGRATION.md](../../docs/NFEH-COMPARISON-AND-MIGRATION.md) for how features and tools (feh, wallpaper, formats) compare.
+
+# nfeh
+
+Electron based GUI for feh
+---
+Demo:
+
+[![nfeh demo on youtube](http://i.imgur.com/mK9wyPq.gif)](https://youtu.be/66BEoGxorXU)
+
+**NOTE:** This is just a hobby project that I'm creating to try out electron and possibly create an useful tool that I might use :grin:.
+Thus, ~~naturally~~ it comes with no guaranteed usefulness or anything of that sort. That said, feel free to contributr.
+
+## LICENSE: [MIT/X11](https://opensource.org/licenses/MIT)
+_Really considering **WTFPL**..._
