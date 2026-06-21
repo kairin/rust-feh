@@ -93,7 +93,7 @@ render_tool_caps_panel
 1. feh MUST always appear as `DepKind::Required`.
 2. ImageMagick MUST always appear as `DepKind::Optional`.
 3. `has_missing_required()` true only when feh absent.
-4. Format route notes MUST NOT claim convert pipeline is live (010 deferred).
+4. Format route notes MUST NOT claim convert pipeline is live (not implemented).
 5. Scan notes MUST reference 005 inventory terminology when describing listed files.
 
 ## Persistence

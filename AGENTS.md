@@ -1,11 +1,7 @@
 <!-- SPECKIT START -->
-**Active feature**: `012-ui-feedback-polish` — **COMPLETE** (T001–T032).
+Feature 012-ui-feedback-polish complete. Prior: 011, 009, 008.
 
-**Shipped**: NAS scan policy (`scan_magick_enabled`); live status bar; deps ✅ collapse; bottom-bar tips; panel borders; detachable Activity log.
+No unpromised future features or named follow-ups (e.g. 010, 011-feh-orchestration) are listed or committed in roadmap.
 
-**Your next step**: Manual quickstart V1–V5 on SMB tree — `specs/012-ui-feedback-polish/validation-results.md`.
-
-**Prior complete**: `011-browsing-experience-round`, `009-external-tool-runtime`, `008-tool-capabilities-panel`.
-
-Read: `specs/012-ui-feedback-polish/quickstart.md`, `gap-audit.md`
+See specs/ for current artifacts; OUTSTANDING-ISSUES-ROADMAP.md for history only.
 <!-- SPECKIT END -->

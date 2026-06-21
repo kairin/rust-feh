@@ -46,7 +46,7 @@ Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of 
 | [008-tool-capabilities-panel](./008-tool-capabilities-panel/spec.md) | Positioning / shipped | Tools side panel: deps, install copy, speed tiers, format routing |
 | [009-external-tool-runtime](./009-external-tool-runtime/spec.md) | A5 + 002 merge | Unified PATH detect + recheck for feh and ImageMagick (**supersedes 002**) |
 
-**Proposed (dinner session)**: `010-imagemagick-format-bridge`; feh filelist portion of `011-feh-launch-orchestration` → **shipped in [011-browsing-experience-round](./011-browsing-experience-round/spec.md)**; `--conversion-timeout` / wallpaper modes still deferred — see [SESSION-2026-06-22-TRACEABILITY.md](./SESSION-2026-06-22-TRACEABILITY.md).
+(No named future features or conversion/wallpaper-mode extensions were promised.)
 
 ---
 

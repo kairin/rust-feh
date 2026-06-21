@@ -28,7 +28,7 @@ thumbnails, menu bars, and richer interactions will build upon.
 **Target Platform**: Linux (X11/Wayland via glow OpenGL backend)
 **Project Type**: desktop-app (single Cargo crate, monolithic `src/main.rs` with modules)
 **Performance Goals**: 60fps scroll on 10k images, <200ms filter response, <150MB RSS
-**Constraints**: Single crate (no workspace split), sync scanning retained (async deferred to Area 6)
+**Constraints**: Single crate (no workspace split), sync scanning retained (background scan added later in 011)
 **Scale/Scope**: 10k-20k image directories, single binary, developer tool for Linux workstations
 
 ## Constitution Check
@@ -115,7 +115,7 @@ Research findings consolidated in [research.md](./research.md). Key decisions:
 | Menu bar in top panel | Starts Area 2 (menu/navigation). File/View/Tools structure. Menu actions MUST be functional per FR-011 (not stubs). |
 | Counter in bottom status bar | "Showing X / Y images" lives in `TopBottomPanel::bottom`, not CentralPanel (FR-006). |
 | Proactive feh detection | `which::which("feh")` at startup; disable buttons when absent (FR-008a, Constitution §IV). |
-| Sync scan responsiveness | Controls stay visible; status shows "Scanning…"; render loop may briefly stall (FR-010). Async deferred to Area 6. |
+| Sync scan responsiveness | Controls stay visible; status shows "Scanning…"; render loop may briefly stall (FR-010). Background scan implemented in later feature. |
 | Filter scroll reset | Scroll position resets to top on filter change (FR-005). |
 
 ## Phase 1: Design

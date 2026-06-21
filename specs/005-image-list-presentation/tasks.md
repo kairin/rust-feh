@@ -257,5 +257,5 @@ T044 data-model || T045 README || T046 tool_caps
 - [x] T053 SC-005 tree/inventory alignment tests in `ui_logic` + `feature_005_list.rs`
 - [x] T054 `#[ignore]` heic magick integration test in `tests/feature_005_list.rs`
 - Default view remains **Flat list** per research R5  
-- Magick convert execution stays **010** — 005 only detects/classifies  
+- Magick convert execution not implemented — 005 only detects/classifies (no conversion) 
 - If T009 perf fails @10k, record decision in `spec.md` Clarifications before disabling (007 advisory)

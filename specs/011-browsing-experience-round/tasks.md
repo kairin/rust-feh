@@ -47,4 +47,4 @@
 - [x] T023 Add `format_walk_warning` unit tests for Permission denied vs `Scan skip:` prefixes per FR-007 / FR-006 / 004-FR-003 (partial)
 - [x] T024 Update `README.md`: Activity log (not debug log), background scan shipped — remove stale "async scanning" future bullet per 011 traceability (unrequested)
 - [x] T025 Update `specs/OUTSTANDING-ISSUES-ROADMAP.md`: mark `004-scanner-resilience` absorbed by 011, note `011-browsing-experience-round` shipped (unrequested)
-- [x] T026 Append gap-audit deferral notes for SESSION items not in scope: `feh --conversion-timeout`, wallpaper mode variants → future feature (unrequested)
+- [x] T026 Append gap-audit deferral notes for SESSION items not in scope (unrequested; later neutralized to remove unpromised feature names)

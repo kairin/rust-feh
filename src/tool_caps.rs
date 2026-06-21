@@ -11,7 +11,7 @@ pub enum SpeedTier {
     Fast,
     /// In-process decode/encode (image crate).
     Medium,
-    /// External convert pipeline or batch work.
+    /// Slower external tooling (e.g. ImageMagick where applicable).
     Slow,
 }
 
@@ -30,7 +30,7 @@ impl SpeedTier {
             SpeedTier::Instant => "in-memory; 10k filter <200ms",
             SpeedTier::Fast => "feh subprocess + GPU viewer",
             SpeedTier::Medium => "Rust image crate decode/encode",
-            SpeedTier::Slow => "ImageMagick convert / batch",
+            SpeedTier::Slow => "External (ImageMagick where used)",
         }
     }
 }
@@ -143,7 +143,7 @@ impl ToolCapabilities {
                 name: "ImageMagick",
                 binaries: &["magick", "convert"],
                 kind: DepKind::Optional,
-                role: "Magick-detect unlisted formats; convert fallback (010)",
+                role: "Magick-detect unlisted formats (convert not implemented)",
                 install_cmd: "sudo apt install imagemagick",
                 installed: self.magick_available,
                 resolved_binary: self.magick_binary.clone(),
@@ -197,7 +197,7 @@ impl ToolCapabilities {
                     SpeedTier::Medium
                 },
                 note: if self.magick_available {
-                    "feh --conversion-timeout + ImageMagick"
+                    "ImageMagick (detection only)"
                 } else {
                     "Limited without ImageMagick on PATH"
                 },
@@ -210,7 +210,7 @@ impl ToolCapabilities {
             (
                 Handler::ImageMagick,
                 SpeedTier::Slow,
-                "Magick-detected in inventory; feh + magick convert",
+                "Magick-detected in inventory; may use ImageMagick (no convert yet)",
             )
         } else {
             (Handler::Feh, SpeedTier::Fast, "Not magick-detected without ImageMagick")
@@ -264,7 +264,7 @@ impl ToolCapabilities {
                     SpeedTier::Instant
                 },
                 note: if self.magick_available {
-                    "Magick-detected (unlisted) in inventory; awaiting convert until processed"
+                    "Magick-detected (unlisted) in inventory; awaiting processing (not implemented)"
                 } else {
                     "Hidden from list/inventory without ImageMagick on PATH"
                 },

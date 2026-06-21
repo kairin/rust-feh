@@ -16,8 +16,8 @@ Master index of topics discussed in the evening session and where they live in S
 | 8 | Folder tree + scan inventory + magick vs converted | **Shipped** | `005` US4–US5, `src/main.rs`, `src/ui_logic.rs` |
 | 9 | Flat list Folder + Filename (pre-dinner shipped) | **Shipped** | `005` US1–US3, status column, `gap-audit.md` |
 | 12 | Adversarial review + remediation (FR-011, SC-005, resize) | **Done** | `005/adversarial-review.md`, T048–T054, `plan.md` updated |
-| 10 | feh filelist / `--conversion-timeout` / wallpaper modes | **Not specced** | Proposed **`011-feh-launch-orchestration`** |
-| 11 | ImageMagick convert fallback + scanner extensions | **Not specced** | Proposed **`010-imagemagick-format-bridge`** |
+| 10 | feh filelist / `--conversion-timeout` / wallpaper modes | Not implemented / out of scope | (No specific follow-on feature promised) |
+| 11 | ImageMagick convert fallback + scanner extensions | Not implemented / out of scope | (No specific follow-on feature promised) |
 
 ## Implement order (session-adjusted)
 
@@ -25,8 +25,8 @@ Master index of topics discussed in the evening session and where they live in S
 2. **008** — gap-audit shipped panel
 3. **009** — Tools menu recheck + spawn-failure sync
 4. **003** — GUI perf validation (parallel / when display available)
-5. **010** — magick identify in scan + convert fallback (from dinner tier 2)
-6. **011** — feh launch enhancements (from dinner tier 1)
+5. **006** — Window/viewer stability (retroactive)
+(Note: 010/011-feh proposals from dinner notes were exploratory only and not promised.)
 
 ## Plans generated this session
 

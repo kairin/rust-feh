@@ -188,7 +188,7 @@ printf x > a.jpg && printf x > a_processed.png
 ## 8. What Not To Do
 
 1. **Do not** close feature 005 in roadmap until FR-011 and SC-005 semantics are clarified in spec and gap-audit.
-2. **Do not** add ImageMagick **convert** pipeline under 005 — belongs to **010**.
+2. **Do not** add ImageMagick **convert** pipeline under 005 (not in scope; not implemented).
 3. **Do not** move sort/filter logic into `main.rs` egui closures — violates constitution §III.
 4. **Do not** claim magick-detected coverage for files beyond the 500 identify cap without UI disclosure (truncation flag exists; overflow counting does not).
 5. **Do not** delete `*_processed.*` rows from the list without spec change — they are valid `Converted` artifacts per R3.

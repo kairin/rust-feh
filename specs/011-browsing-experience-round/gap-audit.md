@@ -21,10 +21,10 @@
 | SC-004 | pass | `t068_permission_denied_warning` |
 | SC-001/002/005 | manual pending | [validation-results.md](./validation-results.md) |
 
-## Deferred (SESSION-2026-06-22 item 10)
+## Deferred / out of scope (no specific future features committed)
 
-| Item | Status | Target |
-|------|--------|--------|
-| `feh --conversion-timeout` | deferred | future feh-launch feature |
-| feh wallpaper mode variants (beyond `--bg-fill`) | deferred | future feh-launch feature |
-| ImageMagick convert pipeline | deferred | proposed `010-imagemagick-format-bridge` |
+| Item | Status |
+|------|--------|
+| `feh --conversion-timeout` flag support | Not implemented |
+| feh wallpaper mode variants (beyond `--bg-fill`) | Not implemented (only `--bg-fill` is used) |
+| ImageMagick convert / fallback pipeline | Not implemented (detection + inventory status only) |

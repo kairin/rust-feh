@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: Dogfood session on SMB/GVFS share — feh stops at subfolder boundaries; network scan freezes UI; debug log not copyable. Consolidates proposed `011-feh-launch-orchestration` and extends `004-scanner-resilience` with responsive scanning.
+**Input**: Dogfood session on SMB/GVFS share — feh stops at subfolder boundaries; network scan freezes UI; debug log not copyable. Implements feh filelist launch + background scan + copyable Activity log (consolidates some exploratory dinner notes).
 
 **Parent**: [001-persistent-ui-virtual-browsing](../001-persistent-ui-virtual-browsing/spec.md), [004-scanner-resilience](../004-scanner-resilience/spec.md), [006-window-viewer-stability](../006-window-viewer-stability/spec.md)
 
@@ -136,6 +136,6 @@ A user wants to copy scan paths, feh commands, or warnings for debugging or shar
 | Source | ID |
 |--------|-----|
 | Dogfood SMB session | feh single-folder spawn |
-| SESSION-2026-06-22 | proposed 011-feh-launch-orchestration |
+| SESSION-2026-06-22 | feh filelist + responsive scan (dinner topics 10/11 partial; no 010/011 named features promised) |
 | 004-scanner-resilience | FR-002–FR-004, SC-001–SC-003 |
 | Constitution §V | responsive scanning |

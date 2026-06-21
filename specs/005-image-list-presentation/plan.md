@@ -16,7 +16,7 @@ Image list presentation is **shipped** in three waves:
 2. **US4–US5 (new)**: Flat list / Folder tree toggle, scan inventory bar, Status column, optional magick `identify` during walk.
 3. **Adversarial remediation (Phase 9)**: FR-011 + SC-005 spec alignment, tree `listed_count` = `native_listed`, post-resize inventory refresh, magick binary cached per scan — see [adversarial-review.md](./adversarial-review.md).
 
-Scanner returns `ScanResult { entries, warnings, inventory }`; GUI calls `finalize_scan_entries` then `refresh_entry_and_inventory` after Quick resize. Full ImageMagick **convert** pipeline remains **010** (out of scope).
+Scanner returns `ScanResult { entries, warnings, inventory }`; GUI calls `finalize_scan_entries` then `refresh_entry_and_inventory` after Quick resize. Full ImageMagick convert pipeline not implemented (out of scope).
 
 ## Technical Context
 
@@ -58,9 +58,9 @@ Scanner returns `ScanResult { entries, warnings, inventory }`; GUI calls `finali
 | Inventory + magick vs converted | ✅ Shipped | US5; FR-011 clarified |
 | Tools capabilities panel | ↔ **008** | Labels aligned (T046) |
 | Tool recheck / PATH detect | ↔ **009** | `magick_available` gates scan |
-| feh filelist / conversion-timeout | ❌ **011** | Deferred |
-| magick convert pipeline | ❌ **010** | Deferred |
-| Per-folder skipped on tree | ❌ **004** | Root shows total only |
+| feh filelist / conversion-timeout | Not in 005 scope | Not implemented |
+| magick convert pipeline | Not in 005 scope | Not implemented |
+| Per-folder skipped on tree | Not in 005 scope | Root shows total only |
 
 ## Project Structure
 
@@ -135,7 +135,7 @@ Consolidated in [research.md](./research.md). Updated: unified `entries` vec (no
 | SC-005 | Tree folder **listed** = `NativeListed` in subtree (= inventory `native_listed` policy) | `ui_logic::bump_folder_counts` |
 | Post-resize | Incremental `refresh_entry_and_inventory` without full rescan | `main.rs` after `process_image` |
 | Magick perf | Resolve `magick`/`convert` once per `scan_images` | `scanner.rs` |
-| Per-folder skipped | Deferred to **004**; root tree line shows scan-wide total | `spec.md` Clarifications |
+| Per-folder skipped | Not implemented; root tree line shows scan-wide total | `spec.md` Clarifications |
 
 ## Dependencies on other features
 
@@ -144,8 +144,8 @@ Consolidated in [research.md](./research.md). Updated: unified `entries` vec (no
 | **001** | Virtualized list, scan root, filter perf | ✅ Consuming |
 | **009** | `ToolCapabilities.magick_available` gates identify | Partial — panel recheck shipped; menu T008 open |
 | **008** | Format routing ↔ inventory labels | ✅ Aligned (T046) |
-| **004** (future) | Per-folder `non_image_skipped` in tree | Deferred |
-| **010** (future) | Convert pipeline for awaiting rows | Deferred |
+| Per-folder counts | Not implemented |
+| Convert pipeline for awaiting rows | Not implemented |
 | **003** | Re-run GUI perf validation | Optional |
 
 ## Deferred / follow-up (not blocking 005 closure)
@@ -153,7 +153,7 @@ Consolidated in [research.md](./research.md). Updated: unified `entries` vec (no
 | Item | Target | Notes |
 |------|--------|-------|
 | Tree perf benchmark @10k | SC-007 / **003** | Lazy expand shipped; no formal tree timing test |
-| Per-folder skipped counts | **004** | Spec edge case documented |
+| Per-folder skipped counts | Not implemented | Spec edge case documented |
 | Tree row `[native · listed]` tags | Polish | Flat Status column complete |
 | `#[ignore]` heic magick test | CI optional | Run with `- ignored` when magick installed |
 

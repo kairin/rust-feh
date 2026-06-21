@@ -17,8 +17,8 @@ It is **not** a port of nfeh. It is a from-scratch Rust rewrite that shares the 
 ## What rust-feh is not
 
 - **Not a feh replacement** — viewing and wallpaper stay in feh (constitution §I).
-- **Not an image editor** — resize/convert are lightweight helpers; full tools dialog is deferred (Area 7).
-- **Not an Electron thumbnail picker** — no in-app preview grid today (planned separately as Area 4).
+- **Not an image editor** — resize/convert are lightweight helpers; full tools dialog not implemented.
+- **Not an Electron thumbnail picker** — no in-app preview grid today (not implemented).
 - **Not ImageMagick-dependent** — magick/convert is optional; the `image` crate covers common formats in-process.
 
 ---
@@ -54,10 +54,10 @@ rust-feh does not compete with feh's keyboard shortcuts, zoom, or slideshow — 
 ImageMagick is an **optional format bridge**, not a core dependency:
 
 - **Today:** detected on PATH; routing and install hints shown in the capabilities panel; convert subprocess **not yet wired** in app code.
-- **Planned:** exotic formats (svg, heic, raw, etc.) convert or identify via magick, then view in feh.
+- **Not yet implemented:** exotic formats (svg, heic, raw, etc.) may use magick identify/convert in future; currently detection only for listing.
 - **Always available:** jpg/png/webp resize via the pure-Rust `image` crate.
 
-Position honestly: document what is live vs planned. The capabilities panel and this doc must agree.
+Position honestly: document what is live vs not yet implemented. The capabilities panel and this doc must agree.
 
 ---
 
@@ -108,8 +108,8 @@ The GUI orchestrates; it does not reimplement feh or ImageMagick (constitution �
 
 | De-emphasize (until shipped) | Why |
 |------------------------------|-----|
-| Thumbnail grid | Not implemented; Area 4 / README roadmap |
-| "Full image editor" or rich convert UI | Area 7 deferred |
+| Thumbnail grid | Not implemented |
+| "Full image editor" or rich convert UI | Not implemented |
 | ImageMagick as fully integrated | Detection + docs only today |
 | Parity with nfeh in-app previews | Different UX by design |
 | Auto-launch feh on select | Removed intentionally (FR-007) |
