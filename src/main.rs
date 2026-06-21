@@ -87,24 +87,9 @@ fn try_run_gui() -> Result<(), String> {
     let (w, h) = window_preset_dimensions(WindowSizePreset::default());
     let (min_w, min_h) = WINDOW_MIN_RESIZABLE;
 
-    let tool_caps = ToolCapabilities::detect();
-    let feh_available = tool_caps.feh_available;
-    let deps_section_open = tool_caps.has_missing_required();
-    let tools_panel_ok = !tool_caps.has_missing_required();
-    let status = if feh_available {
-        String::new()
-    } else {
-        "feh not found — install with `sudo apt install feh`".to_string()
-    };
+    let (status, feh_available, tool_caps, deps_section_open, tools_panel_ok) = detect_app_state();
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([w, h])
-            .with_min_inner_size([min_w, min_h])
-            .with_resizable(true)
-            .with_title("rust-feh"),
-        ..Default::default()
-    };
+    let options = build_native_options(w, h, min_w, min_h);
 
     let status_first = status.clone();
     let tool_caps_first = tool_caps.clone();
@@ -134,6 +119,30 @@ fn try_run_gui() -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn detect_app_state() -> (String, bool, ToolCapabilities, bool, bool) {
+    let tool_caps = ToolCapabilities::detect();
+    let feh_available = tool_caps.feh_available;
+    let deps_section_open = tool_caps.has_missing_required();
+    let tools_panel_ok = !tool_caps.has_missing_required();
+    let status = if feh_available {
+        String::new()
+    } else {
+        "feh not found — install with `sudo apt install feh`".to_string()
+    };
+    (status, feh_available, tool_caps, deps_section_open, tools_panel_ok)
+}
+
+fn build_native_options(w: f32, h: f32, min_w: f32, min_h: f32) -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([w, h])
+            .with_min_inner_size([min_w, min_h])
+            .with_resizable(true)
+            .with_title("rust-feh"),
+        ..Default::default()
+    }
 }
 
 fn handle_gui_failure(
