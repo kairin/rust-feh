@@ -79,6 +79,9 @@ fn main() -> eframe::Result<()> {
                 scan_generation: 0,
                 scan_rx: None,
                 activity_log_detached: false,
+                session_status_detached: false,
+                deps_detached: false,
+                format_discovery_detached: false,
                 deps_section_open,
                 activity_log_open: false,
                 session_status_open: false,
@@ -116,6 +119,9 @@ struct RustFehApp {
     scan_generation: u64,
     scan_rx: Option<Receiver<ScanComplete>>,
     activity_log_detached: bool,
+    session_status_detached: bool,
+    deps_detached: bool,
+    format_discovery_detached: bool,
     activity_log_open: bool,
     session_status_open: bool,
     /// Collapsed by default once required dependencies are OK.
@@ -386,29 +392,6 @@ impl RustFehApp {
         });
     }
 
-    fn render_scanning_label(&self, ui: &mut egui::Ui, time: f64) {
-        let dots = [".", "..", "..."][(time as usize / 2) % 3];
-        let network = self
-            .current_dir
-            .as_ref()
-            .is_some_and(|p| is_network_mount_path(p));
-        let pulse = ((time * 5.0).sin() * 0.5 + 0.5) as f32;
-        let color = egui::Color32::from_rgb(
-            (80.0 + 100.0 * pulse) as u8,
-            (160.0 + 60.0 * pulse) as u8,
-            255,
-        );
-        let text = if network {
-            format!("Scanning{dots} (network folder — UI stays responsive)")
-        } else {
-            format!("Scanning{dots}")
-        };
-        ui.horizontal(|ui| {
-            ui.colored_label(color, "●");
-            ui.colored_label(color, text);
-        });
-    }
-
     fn render_dependency_row(
         &mut self,
         ui: &mut egui::Ui,
@@ -472,29 +455,16 @@ impl RustFehApp {
         ));
     }
 
-    fn activity_log_header_label(&self) -> String {
-        if self.activity_log_detached {
-            return "Activity log — detached".to_string();
-        }
-        let n = self.debug_logs.len();
-        if n == 0 {
-            "Activity log".to_string()
+    fn header_with_detach_suffix(label: String, detached: bool) -> String {
+        if detached {
+            format!("{label} — detached")
         } else {
-            format!("Activity log — {n} events")
+            label
         }
     }
 
-    fn render_inspector_activity_log(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.activity_log_detached {
-            ui.horizontal(|ui| {
-                ui.label("Log is in a separate window.");
-                if ui.small_button("Reattach").clicked() {
-                    self.activity_log_detached = false;
-                }
-            });
-            return;
-        }
-
+    fn render_segment_detach_toolbar(ui: &mut egui::Ui, caption: &str, detach_label: &str) -> bool {
+        let mut detach = false;
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(4.0, 2.0))
             .stroke(egui::Stroke::new(
@@ -503,16 +473,126 @@ impl RustFehApp {
             ))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.small("Scan events, feh commands, warnings");
+                    ui.small(caption);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Detach window").clicked() {
-                            self.activity_log_detached = true;
+                        if ui.small_button(detach_label).clicked() {
+                            detach = true;
                         }
                     });
                 });
             });
         ui.add_space(6.0);
+        detach
+    }
+
+    fn render_detached_placeholder(ui: &mut egui::Ui, segment: &str) {
+        ui.small(format!("{segment} is in a separate window. Close it with X to return here."));
+    }
+
+    fn activity_log_header_label(&self) -> String {
+        let base = {
+            let n = self.debug_logs.len();
+            if n == 0 {
+                "Activity log".to_string()
+            } else {
+                format!("Activity log — {n} events")
+            }
+        };
+        Self::header_with_detach_suffix(base, self.activity_log_detached)
+    }
+
+    fn deps_header_label(&self) -> String {
+        let base = if !self.tool_caps.has_missing_required() {
+            "✅ Dependencies — all required tools OK".to_string()
+        } else {
+            "⚠ Dependencies — action needed".to_string()
+        };
+        Self::header_with_detach_suffix(base, self.deps_detached)
+    }
+
+    fn format_discovery_header_label(&self) -> String {
+        let routes = self.tool_caps.format_routes();
+        let base = format!("Format discovery — {} groups", routes.len());
+        Self::header_with_detach_suffix(base, self.format_discovery_detached)
+    }
+
+    fn render_inspector_activity_log(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.activity_log_detached {
+            Self::render_detached_placeholder(ui, "Activity log");
+            return;
+        }
+
+        if Self::render_segment_detach_toolbar(
+            ui,
+            "Scan events, feh commands, warnings",
+            "Detach window",
+        ) {
+            self.activity_log_detached = true;
+        }
         self.render_activity_log_body(ui, ctx);
+    }
+
+    fn render_deps_section_body(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let deps = self.tool_caps.dependencies();
+        for dep in &deps {
+            self.render_dependency_row(ui, ctx, dep);
+        }
+
+        if ui.button("Recheck tools on PATH").clicked() {
+            self.refresh_tool_caps();
+        }
+    }
+
+    fn render_inspector_dependencies(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.deps_detached {
+            Self::render_detached_placeholder(ui, "Dependencies");
+            return;
+        }
+
+        if Self::render_segment_detach_toolbar(
+            ui,
+            "feh, ImageMagick, and other PATH tools",
+            "Detach window",
+        ) {
+            self.deps_detached = true;
+        }
+        self.render_deps_section_body(ui, ctx);
+    }
+
+    fn render_format_discovery_body(&mut self, ui: &mut egui::Ui) {
+        ui.small(
+            "Scan = native listed or magick-detected; View = feh; Resize = quick resize demo.",
+        );
+        let routes = self.tool_caps.format_routes();
+        for route in &routes {
+            let route_id = route.extensions.to_string();
+            let route_open = self.format_route_open.contains(&route_id);
+            let route_response = egui::CollapsingHeader::new(route.summary_line())
+                .id_salt(format!("tool_route_{route_id}"))
+                .open(Some(route_open))
+                .show(ui, |ui| {
+                    Self::render_format_route_body(ui, route);
+                });
+            if route_response.header_response.clicked() {
+                self.toggle_format_route(&route_id);
+            }
+        }
+    }
+
+    fn render_inspector_format_discovery(&mut self, ui: &mut egui::Ui) {
+        if self.format_discovery_detached {
+            Self::render_detached_placeholder(ui, "Format discovery");
+            return;
+        }
+
+        if Self::render_segment_detach_toolbar(
+            ui,
+            "Per-format scan, view, and resize routing",
+            "Detach window",
+        ) {
+            self.format_discovery_detached = true;
+        }
+        self.render_format_discovery_body(ui);
     }
 
     fn render_inspector_panel(
@@ -527,12 +607,40 @@ impl RustFehApp {
         ui.label("Activity, external tools, and format routing.");
         ui.separator();
 
-        let status_header = self.session_status_header_label(shown, total);
+        let pulse_fill = if self.scanning {
+            Self::activity_pulse_color(time, true)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let pulse_stroke = if self.scanning {
+            let pulse = ((time * 5.0).sin() * 0.5 + 0.5) as f32;
+            egui::Stroke::new(
+                1.5,
+                egui::Color32::from_rgb(
+                    (80.0 + 100.0 * pulse) as u8,
+                    (160.0 + 60.0 * pulse) as u8,
+                    255,
+                ),
+            )
+        } else {
+            egui::Stroke::NONE
+        };
+        let status_header = self.session_status_header_rich(shown, total, time);
         let status_response = egui::CollapsingHeader::new(status_header)
             .id_salt("inspector_session_status")
             .open(Some(self.session_status_open))
             .show(ui, |ui| {
-                self.render_inspector_session_status(ui, ctx, shown, total, time);
+                if self.scanning && !self.session_status_detached {
+                    egui::Frame::none()
+                        .fill(pulse_fill)
+                        .stroke(pulse_stroke)
+                        .inner_margin(egui::Margin::symmetric(2.0, 1.0))
+                        .show(ui, |ui| {
+                            self.render_inspector_session_status(ui, ctx, shown, total, time);
+                        });
+                } else {
+                    self.render_inspector_session_status(ui, ctx, shown, total, time);
+                }
             });
         if status_response.header_response.clicked() {
             self.session_status_open = !self.session_status_open;
@@ -551,56 +659,24 @@ impl RustFehApp {
         if log_response.header_response.clicked() {
             self.activity_log_open = !self.activity_log_open;
         }
-        if self.scanning && !self.activity_log_open {
-            self.activity_log_open = true;
-        }
 
-        let required_ok = !self.tool_caps.has_missing_required();
-        let deps_header = if required_ok {
-            "✅ Dependencies — all required tools OK"
-        } else {
-            "⚠ Dependencies — action needed"
-        };
-
+        let deps_header = self.deps_header_label();
         let deps_response = egui::CollapsingHeader::new(deps_header)
             .id_salt("tool_deps")
             .open(Some(self.deps_section_open))
             .show(ui, |ui| {
-                let deps = self.tool_caps.dependencies();
-                for dep in &deps {
-                    self.render_dependency_row(ui, ctx, dep);
-                }
-
-                if ui.button("Recheck tools on PATH").clicked() {
-                    self.refresh_tool_caps();
-                }
+                self.render_inspector_dependencies(ui, ctx);
             });
         if deps_response.header_response.clicked() {
             self.deps_section_open = !self.deps_section_open;
         }
 
-        let routes = self.tool_caps.format_routes();
-        let fd_header = format!("Format discovery — {} groups", routes.len());
+        let fd_header = self.format_discovery_header_label();
         let fd_response = egui::CollapsingHeader::new(fd_header)
             .id_salt("tool_format_discovery")
             .open(Some(self.format_discovery_open))
             .show(ui, |ui| {
-                ui.small(
-                    "Scan = native listed or magick-detected; View = feh; Resize = quick resize demo.",
-                );
-                for route in &routes {
-                    let route_id = route.extensions.to_string();
-                    let route_open = self.format_route_open.contains(&route_id);
-                    let route_response = egui::CollapsingHeader::new(route.summary_line())
-                        .id_salt(format!("tool_route_{route_id}"))
-                        .open(Some(route_open))
-                        .show(ui, |ui| {
-                            Self::render_format_route_body(ui, route);
-                        });
-                    if route_response.header_response.clicked() {
-                        self.toggle_format_route(&route_id);
-                    }
-                }
+                self.render_inspector_format_discovery(ui);
             });
         if fd_response.header_response.clicked() {
             self.format_discovery_open = !self.format_discovery_open;
@@ -631,26 +707,41 @@ impl RustFehApp {
         }
     }
 
-    fn session_status_header_label(&self, shown: usize, total: usize) -> String {
+    /// Collapsed inspector headers stay compact (count only); full status lives in the body.
+    fn session_status_header_rich(&self, shown: usize, total: usize, time: f64) -> egui::RichText {
         let count = showing_count_label(shown, total);
-        if self.scanning {
-            format!("Session status — {count} · Scanning…")
-        } else if self.status.is_empty() {
-            format!("Session status — {count}")
+        let mut label = if self.scanning {
+            let dots = [".", "..", "..."][(time as usize / 2) % 3];
+            format!("● Session status — {count} · Scanning{dots}")
         } else {
-            let short = self.compact_status_label();
-            format!("Session status — {count} · {short}")
+            format!("Session status — {count}")
+        };
+
+        if self.session_status_detached {
+            label = Self::header_with_detach_suffix(label, true);
         }
+
+        let mut rich = egui::RichText::new(label);
+        if self.scanning && !self.session_status_detached {
+            let pulse = ((time * 5.0).sin() * 0.5 + 0.5) as f32;
+            rich = rich.color(egui::Color32::from_rgb(
+                (120.0 + 80.0 * pulse) as u8,
+                (170.0 + 60.0 * pulse) as u8,
+                255,
+            ));
+        }
+        rich
     }
 
-    fn compact_status_label(&self) -> String {
-        let text = self.status_text_for_copy();
-        const MAX: usize = 48;
-        if text.chars().count() <= MAX {
-            text
-        } else {
-            format!("{}…", text.chars().take(MAX).collect::<String>())
-        }
+    fn inspector_max_width(ctx: &egui::Context) -> f32 {
+        let viewport_w = ctx.input(|i| {
+            i.viewport()
+                .inner_rect
+                .map(|r| r.width())
+                .unwrap_or(720.0)
+        });
+        // Inspector must not exceed the central image-list panel (each gets at least half).
+        (viewport_w * 0.5).max(260.0)
     }
 
     fn render_session_status_body(
@@ -679,29 +770,13 @@ impl RustFehApp {
             ui.add_space(6.0);
 
             let body_h = 120.0;
-            let pulse_fill = if self.scanning {
-                Self::activity_pulse_color(time, true)
-            } else {
-                egui::Color32::TRANSPARENT
-            };
             egui::Frame::group(ui.style())
-                .fill(pulse_fill)
                 .inner_margin(6.0)
                 .show(ui, |ui| {
                     ui.set_min_height(body_h);
-                    let count_color = if self.scanning {
-                        let pulse = ((time * 5.0).sin() * 0.5 + 0.5) as f32;
-                        egui::Color32::from_rgb(
-                            (120.0 + 80.0 * pulse) as u8,
-                            (170.0 + 60.0 * pulse) as u8,
-                            255,
-                        )
-                    } else {
-                        ui.style().visuals.text_color()
-                    };
-                    ui.colored_label(count_color, showing_count_label(shown, total));
+                    ui.label(showing_count_label(shown, total));
                     if self.scanning {
-                        self.render_scanning_label(ui, time);
+                        ui.small(self.status_text_for_copy());
                     } else {
                         ui.add(
                             egui::Label::new(&self.status)
@@ -736,17 +811,87 @@ impl RustFehApp {
         total: usize,
         time: f64,
     ) {
-        egui::Frame::none()
-            .inner_margin(egui::Margin::symmetric(4.0, 2.0))
-            .stroke(egui::Stroke::new(
-                1.0,
-                ui.style().visuals.widgets.noninteractive.bg_stroke.color,
-            ))
-            .show(ui, |ui| {
-                ui.small("Image count, current status, operation speed tips");
-            });
-        ui.add_space(6.0);
+        if self.session_status_detached {
+            Self::render_detached_placeholder(ui, "Session status");
+            return;
+        }
+
+        if Self::render_segment_detach_toolbar(
+            ui,
+            "Image count, current status, operation speed tips",
+            "Detach window",
+        ) {
+            self.session_status_detached = true;
+        }
         self.render_session_status_body(ui, ctx, shown, total, time);
+    }
+
+    fn render_detached_inspector_windows(
+        &mut self,
+        ctx: &egui::Context,
+        shown: usize,
+        total: usize,
+    ) {
+        let time = ctx.input(|i| i.time);
+
+        if self.session_status_detached {
+            let mut open = self.session_status_detached;
+            let pulse_fill = if self.scanning {
+                Self::activity_pulse_color(time, true)
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            egui::Window::new("Session status")
+                .open(&mut open)
+                .collapsible(true)
+                .resizable(true)
+                .default_width(480.0)
+                .show(ctx, |ui| {
+                    egui::Frame::none().fill(pulse_fill).show(ui, |ui| {
+                        self.render_session_status_body(ui, ctx, shown, total, time);
+                    });
+                });
+            self.session_status_detached = open;
+        }
+
+        if self.activity_log_detached {
+            let mut open = self.activity_log_detached;
+            egui::Window::new("Activity log")
+                .open(&mut open)
+                .collapsible(true)
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    self.render_activity_log_body(ui, ctx);
+                });
+            self.activity_log_detached = open;
+        }
+
+        if self.deps_detached {
+            let mut open = self.deps_detached;
+            egui::Window::new("Dependencies")
+                .open(&mut open)
+                .collapsible(true)
+                .resizable(true)
+                .default_width(420.0)
+                .show(ctx, |ui| {
+                    self.render_deps_section_body(ui, ctx);
+                });
+            self.deps_detached = open;
+        }
+
+        if self.format_discovery_detached {
+            let mut open = self.format_discovery_detached;
+            egui::Window::new("Format discovery")
+                .open(&mut open)
+                .collapsible(true)
+                .resizable(true)
+                .default_width(480.0)
+                .show(ctx, |ui| {
+                    self.render_format_discovery_body(ui);
+                });
+            self.format_discovery_detached = open;
+        }
     }
 }
 
@@ -952,12 +1097,6 @@ impl App for RustFehApp {
                 });
             });
 
-            if let Some(sel) = &self.selected {
-                ui.label(format!("Current selection: {}", sel.display()));
-            } else {
-                ui.label("No image selected");
-            }
-
             ui.horizontal(|ui| {
                 if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
                     self.log("User clicked 'Open in feh'");
@@ -1023,11 +1162,14 @@ impl App for RustFehApp {
             });
         });
 
+        let inspector_max_w = Self::inspector_max_width(ctx);
         egui::SidePanel::right("inspector")
             .resizable(true)
-            .default_width(320.0)
+            .default_width(320.0_f32.min(inspector_max_w))
             .min_width(260.0)
+            .max_width(inspector_max_w)
             .show(ctx, |ui| {
+                ui.set_max_width(inspector_max_w);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -1203,22 +1345,7 @@ impl App for RustFehApp {
                 });
         });
 
-        if self.activity_log_detached {
-            let mut open = self.activity_log_detached;
-            egui::Window::new("Activity log")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(520.0)
-                .show(ctx, |ui| {
-                    self.render_activity_log_body(ui, ctx);
-                    ui.separator();
-                    if ui.button("Reattach to main window").clicked() {
-                        self.activity_log_detached = false;
-                    }
-                });
-            self.activity_log_detached = open;
-        }
+        self.render_detached_inspector_windows(ctx, shown, total);
 
         let busy = self.is_activity_busy();
         let tip_animating = !self.tool_caps.operation_timings().is_empty();
