@@ -1,0 +1,21 @@
+# Copy this file to .envrc.local and fill in real values.
+#   cp .envrc.local.example .envrc.local
+# Then: direnv allow
+#
+# .envrc.local is gitignored — never commit API tokens or passwords.
+
+# --- GitHub (gh CLI, MCP, CI) ---
+# export GITHUB_TOKEN="ghp_..."
+# export GH_TOKEN="${GITHUB_TOKEN}"
+
+# --- AI / agent tooling (if you use them in this workspace) ---
+# export OPENAI_API_KEY="sk-..."
+# export ANTHROPIC_API_KEY="sk-ant-..."
+# export XAI_API_KEY="xai-..."
+
+# --- Codacy / other dev services ---
+# export CODACY_API_TOKEN="..."
+
+# --- Optional overrides ---
+# export RUST_LOG="rust_feh=debug"
+# export DISPLAY=":0"
