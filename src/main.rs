@@ -77,6 +77,13 @@ fn create_rust_feh_app(
 }
 
 fn main() {
+    if let Err(err) = try_run_gui() {
+        eprintln!("[rust-feh] {}", err);
+        std::process::exit(1);
+    }
+}
+
+fn try_run_gui() -> Result<(), String> {
     let (w, h) = window_preset_dimensions(WindowSizePreset::default());
     let (min_w, min_h) = WINDOW_MIN_RESIZABLE;
 
@@ -99,11 +106,9 @@ fn main() {
         ..Default::default()
     };
 
-    // Clone for first attempt's closure (originals preserved for possible X11 fallback)
     let status_first = status.clone();
     let tool_caps_first = tool_caps.clone();
 
-    // First attempt (respects WAYLAND_DISPLAY if set, prefers Wayland)
     let result = eframe::run_native(
         "rust-feh",
         options.clone(),
@@ -154,20 +159,14 @@ fn main() {
                     ) as Box<dyn App>)
                 }),
             ) {
-                eprintln!("[rust-feh] X11 fallback also failed: {}", err2);
-                eprintln!("[rust-feh] No usable display server found.");
-                eprintln!("[rust-feh] For normal Wayland use: make sure a compositor is active (e.g. start from a login manager).");
-                eprintln!("[rust-feh] You can also force X11 manually:  WINIT_UNIX_BACKEND=x11 ./rust-feh");
-                std::process::exit(1);
+                return Err(format!("X11 fallback also failed: {}. No usable display server found. For normal Wayland use: make sure a compositor is active (e.g. start from a login manager). You can also force X11 manually: WINIT_UNIX_BACKEND=x11 ./rust-feh", err2));
             }
-            // X11 succeeded; app is running (via fallback)
             eprintln!("[rust-feh] Running via X11 fallback this time. Native Wayland works on standard desktop compositors.");
         } else {
-            eprintln!("[rust-feh] No Wayland detected. Ensure a display (X11 or Wayland compositor) is available.");
-            eprintln!("[rust-feh] Check DISPLAY and/or WAYLAND_DISPLAY environment variables.");
-            std::process::exit(1);
+            return Err("No Wayland detected. Ensure a display (X11 or Wayland compositor) is available. Check DISPLAY and/or WAYLAND_DISPLAY environment variables.".to_string());
         }
     }
+    Ok(())
 }
 
 struct RustFehApp {
