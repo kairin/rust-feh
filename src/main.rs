@@ -162,7 +162,6 @@ fn main() {
             }
             // X11 succeeded; app is running (via fallback)
             eprintln!("[rust-feh] Running via X11 fallback this time. Native Wayland works on standard desktop compositors.");
-            return;
         } else {
             eprintln!("[rust-feh] No Wayland detected. Ensure a display (X11 or Wayland compositor) is available.");
             eprintln!("[rust-feh] Check DISPLAY and/or WAYLAND_DISPLAY environment variables.");
