@@ -109,6 +109,8 @@ pub struct ToolCapabilities {
     pub feh_available: bool,
     pub magick_available: bool,
     pub magick_binary: Option<String>,
+    pub magick_cache_available: bool,
+    pub magick_cache_ready: bool, // beyond binary present: e.g. initialized with passkey (light probe)
 }
 
 impl ToolCapabilities {
@@ -119,10 +121,15 @@ impl ToolCapabilities {
             .or_else(|| which::which("convert").ok())
             .map(|p| p.display().to_string());
         let magick_available = magick_binary.is_some();
+        let magick_cache_available = which::which("magick-cache").is_ok();
+        // Binary on PATH is enough here; full cache-root probe runs once in MagickCacheManager::new.
+        let magick_cache_ready = magick_cache_available;
         Self {
             feh_available,
             magick_available,
             magick_binary,
+            magick_cache_available,
+            magick_cache_ready,
         }
     }
 
@@ -147,6 +154,17 @@ impl ToolCapabilities {
                 install_cmd: "sudo apt install imagemagick",
                 installed: self.magick_available,
                 resolved_binary: self.magick_binary.clone(),
+            },
+            DependencyStatus {
+                name: "magick-cache",
+                binaries: &["magick-cache"],
+                kind: DepKind::Optional,
+                role: "Persistent cache for fast repeats + Prepare Fast feh (optional but recommended)",
+                install_cmd: "Install modern ImageMagick 7+ with cache tools (see README)",
+                installed: self.magick_cache_available,
+                resolved_binary: self
+                    .magick_cache_available
+                    .then(|| "magick-cache".to_string()),
             },
         ]
     }
@@ -314,17 +332,18 @@ mod tests {
     #[test]
     fn detect_returns_feh_and_magick_fields() {
         let caps = ToolCapabilities::detect();
-        let _ = (caps.feh_available, caps.magick_available);
+        let _ = (caps.feh_available, caps.magick_available, caps.magick_cache_available);
     }
 
     #[test]
-    fn dependencies_include_feh_and_imagemagick() {
+    fn dependencies_include_feh_and_imagemagick_and_magickcache() {
         let caps = ToolCapabilities::detect();
         let deps = caps.dependencies();
-        assert_eq!(deps.len(), 2);
+        assert_eq!(deps.len(), 3);
         assert_eq!(deps[0].name, "feh");
         assert_eq!(deps[1].name, "ImageMagick");
-        assert_eq!(deps[1].install_cmd, "sudo apt install imagemagick");
+        assert_eq!(deps[2].name, "magick-cache");
+        assert!(deps.iter().any(|d| d.name == "magick-cache"));
     }
 
     #[test]
@@ -355,6 +374,8 @@ mod tests {
             feh_available: false,
             magick_available: false,
             magick_binary: None,
+            magick_cache_available: false,
+            magick_cache_ready: false,
         };
         let ops = caps.operation_timings();
         let view = ops
@@ -370,6 +391,8 @@ mod tests {
             feh_available: true,
             magick_available: false,
             magick_binary: None,
+            magick_cache_available: false,
+            magick_cache_ready: false,
         };
         let heic = caps
             .format_routes()
@@ -385,6 +408,8 @@ mod tests {
             feh_available: true,
             magick_available: true,
             magick_binary: Some("magick".to_string()),
+            magick_cache_available: false,
+            magick_cache_ready: false,
         };
         let heic = caps
             .format_routes()
@@ -431,6 +456,8 @@ mod tests {
             feh_available: false,
             magick_available: false,
             magick_binary: None,
+            magick_cache_available: false,
+            magick_cache_ready: false,
         };
         let deps = caps.dependencies();
         assert_eq!(deps[0].kind, DepKind::Required);

@@ -27,6 +27,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # Utilities
 which = "6"
 
+# Clipboard + persisted launch-entry configuration (feature 014)
+arboard = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # For future async work (commented to keep initial compile lighter)
 # tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 # flume = "0.11"
@@ -37,3 +42,31 @@ codegen-units = 1
 panic = "abort"
 strip = true
 opt-level = 3
+
+[[test]]
+name = "unit_image_proc"
+path = "tests/unit/image_proc.rs"
+
+[[test]]
+name = "unit_ui_logic"
+path = "tests/unit/ui_logic.rs"
+
+[[test]]
+name = "integration_image_tools"
+path = "tests/integration/image_tools.rs"
+
+[[test]]
+name = "integration_clipboard_copy"
+path = "tests/integration/clipboard_copy.rs"
+
+[[test]]
+name = "feature_014_folders"
+path = "tests/integration/feature_014_folders.rs"
+
+[[test]]
+name = "desktop_tools_variations"
+path = "tests/integration/desktop_tools_variations.rs"
+
+[[test]]
+name = "perf_sc_timing"
+path = "tests/perf/sc_timing.rs"

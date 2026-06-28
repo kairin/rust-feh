@@ -7,3 +7,43 @@
 .env
 .env.*
 !.envrc.local.example
+
+# Rust specific (in addition to /target/)
+**/*.rs.bk
+*.rlib
+*.rmeta
+*.profraw
+*.profdata
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+
+# Build artifacts
+/rust-feh
+/debug/
+/release/
+# Additional Rust build / profile artifacts
+*.rlib
+*.rmeta
+*.d
+*.profraw
+*.profdata
+
+# Direnv and env (already partially covered)
+.envrc
+.envrc.local
+.env
+.env.*
+
+# Editor
+*.swp
+*~

@@ -10,6 +10,8 @@ use crate::types::{FileStatus, ImageEntry, ScanInventory};
 
 pub const MAGICK_IDENTIFY_CAP: usize = 500;
 pub const SCAN_WARNING_CAP: usize = 50;
+/// Emit partial scan updates every N native images so the list/feh can be used early.
+pub const SCAN_PROGRESS_EVERY: usize = 200;
 
 /// Format a walkdir error for the activity log (feature 004 / 011).
 pub fn format_walk_warning(err: &walkdir::Error) -> String {
@@ -48,64 +50,146 @@ pub struct ScanResult {
     pub inventory: ScanInventory,
 }
 
-/// Scan `dir` for images and inventory stats. Optional ImageMagick `identify` for unlisted types.
-pub fn scan_images(dir: &Path, recursive: bool, magick_available: bool) -> ScanResult {
+/// Scan `dir` for images. `magick_identify` runs per-file ImageMagick probes (slow; off by default).
+pub fn scan_images(dir: &Path, recursive: bool, magick_identify: bool) -> ScanResult {
+    scan_images_streaming(dir, recursive, magick_identify, |_, _, _| {})
+}
+
+struct ScanWalkState<'a> {
+    entries: &'a mut Vec<ImageEntry>,
+    non_image_skipped: &'a mut usize,
+    magick_identify_calls: &'a mut usize,
+    magick_truncated: &'a mut bool,
+    since_last_emit: &'a mut usize,
+    magick_bin: Option<&'a std::path::Path>,
+    magick_identify: bool,
+}
+
+fn emit_scan_partial(
+    state: &ScanWalkState<'_>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) {
+    on_partial(
+        state.entries.as_slice(),
+        *state.non_image_skipped,
+        *state.magick_truncated,
+    );
+}
+
+fn record_native_image(
+    path: std::path::PathBuf,
+    state: &mut ScanWalkState<'_>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) {
+    state.entries.push(ImageEntry::new(path));
+    *state.since_last_emit += 1;
+    if *state.since_last_emit >= SCAN_PROGRESS_EVERY {
+        *state.since_last_emit = 0;
+        emit_scan_partial(state, on_partial);
+    }
+}
+
+fn try_magick_probe(path: std::path::PathBuf, state: &mut ScanWalkState<'_>) -> bool {
+    if !state.magick_identify {
+        return false;
+    }
+    if *state.magick_identify_calls >= MAGICK_IDENTIFY_CAP {
+        *state.magick_truncated = true;
+        return false;
+    }
+    if !is_magick_image(&path, state.magick_bin) {
+        return false;
+    }
+    *state.magick_identify_calls += 1;
+    state
+        .entries
+        .push(ImageEntry::with_status(path, FileStatus::MagickDetected));
+    *state.since_last_emit += 1;
+    true
+}
+
+fn classify_walk_file(
+    path: std::path::PathBuf,
+    state: &mut ScanWalkState<'_>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) {
+    if is_native_image(&path) {
+        record_native_image(path, state, on_partial);
+        return;
+    }
+    if is_obvious_non_image(&path) {
+        *state.non_image_skipped += 1;
+        return;
+    }
+    if try_magick_probe(path, state) {
+        return;
+    }
+    *state.non_image_skipped += 1;
+}
+
+fn resolve_magick_bin(magick_identify: bool) -> Option<std::path::PathBuf> {
+    if !magick_identify {
+        return None;
+    }
+    which::which("magick")
+        .ok()
+        .or_else(|| which::which("convert").ok())
+}
+
+fn walk_scan_files(
+    dir: &Path,
+    recursive: bool,
+    magick_identify: bool,
+    magick_bin: Option<&Path>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) -> (Vec<ImageEntry>, Vec<String>, usize, bool) {
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
     let mut non_image_skipped = 0usize;
     let mut magick_identify_calls = 0usize;
     let mut magick_truncated = false;
-    let magick_bin = if magick_available {
-        which::which("magick")
-            .ok()
-            .or_else(|| which::which("convert").ok())
-    } else {
-        None
-    };
-
+    let mut since_last_emit = 0usize;
     let walker = if recursive {
         WalkDir::new(dir).follow_links(false)
     } else {
         WalkDir::new(dir).follow_links(false).max_depth(1)
     };
-
     for entry in walker.into_iter() {
         match entry {
-            Ok(e) => {
-                if !e.file_type().is_file() {
-                    continue;
-                }
-                let path = e.path().to_path_buf();
-                if is_native_image(&path) {
-                    entries.push(ImageEntry::new(path));
-                    continue;
-                }
-                if magick_available && magick_identify_calls < MAGICK_IDENTIFY_CAP {
-                    if is_magick_image(&path, magick_bin.as_deref()) {
-                        magick_identify_calls += 1;
-                        entries.push(ImageEntry::with_status(
-                            path,
-                            FileStatus::MagickDetected,
-                        ));
-                        continue;
-                    }
-                } else if magick_available && magick_identify_calls >= MAGICK_IDENTIFY_CAP {
-                    magick_truncated = true;
-                }
-                non_image_skipped += 1;
+            Ok(e) if e.file_type().is_file() => {
+                let mut state = ScanWalkState {
+                    entries: &mut entries,
+                    non_image_skipped: &mut non_image_skipped,
+                    magick_identify_calls: &mut magick_identify_calls,
+                    magick_truncated: &mut magick_truncated,
+                    since_last_emit: &mut since_last_emit,
+                    magick_bin,
+                    magick_identify,
+                };
+                classify_walk_file(e.path().to_path_buf(), &mut state, on_partial);
             }
-            Err(e) => {
-                warnings.push(format_walk_warning(&e));
-            }
+            Ok(_) => {}
+            Err(e) => warnings.push(format_walk_warning(&e)),
         }
     }
+    (entries, warnings, non_image_skipped, magick_truncated)
+}
 
-    entries.sort_by_key(|e| e.path.clone());
+/// Extension-first directory walk; optional incremental `on_partial` callbacks.
+pub fn scan_images_streaming(
+    dir: &Path,
+    recursive: bool,
+    magick_identify: bool,
+    mut on_partial: impl FnMut(&[ImageEntry], usize, bool),
+) -> ScanResult {
+    let magick_bin = resolve_magick_bin(magick_identify);
+    let (mut entries, warnings, non_image_skipped, magick_truncated) =
+        walk_scan_files(dir, recursive, magick_identify, magick_bin.as_deref(), &mut on_partial);
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
     let inventory = ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
-    let warnings = summarize_scan_warnings(warnings);
     ScanResult {
         entries,
-        warnings,
+        warnings: summarize_scan_warnings(warnings),
         inventory,
     }
 }
@@ -117,6 +201,29 @@ fn is_native_image(path: &Path) -> bool {
             matches!(
                 e.as_str(),
                 "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp"
+            )
+        }
+        None => false,
+    }
+}
+
+/// Extensions that are never worth a per-file `magick identify` subprocess (videos, archives, etc.).
+fn is_obvious_non_image(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => {
+            let e = ext.to_lowercase();
+            matches!(
+                e.as_str(),
+                // video
+                "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "mpg" | "mpeg" | "wmv" | "flv"
+                    | "vtx"
+                    // audio
+                    | "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a"
+                    // archives / packages
+                    | "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "deb" | "rpm"
+                    // documents / data
+                    | "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md"
+                    | "db" | "sqlite" | "json" | "xml" | "html" | "css" | "js" | "rs" | "py"
             )
         }
         None => false,
@@ -140,6 +247,13 @@ fn is_magick_image(path: &Path, magick_bin: Option<&Path>) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
+
+    fn scanner_test_dir(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(name)
+    }
 
     #[test]
     fn scan_nonexistent_dir_returns_empty() {
@@ -154,8 +268,25 @@ mod tests {
     }
 
     #[test]
+    fn scan_skips_obvious_non_images_without_magick_probe() {
+        let dir = scanner_test_dir(&format!("scanner-skip-video-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        fs::write(dir.join("clip.mp4"), b"fake").unwrap();
+        fs::write(dir.join("bundle.zip"), b"fake").unwrap();
+
+        let r = scan_images(&dir, false, true);
+        assert_eq!(r.entries.len(), 1);
+        assert!(r.entries[0].path.ends_with("photo.jpg"));
+        assert_eq!(r.inventory.non_image_skipped, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn scan_finds_supported_extension() {
-        let dir = std::env::temp_dir().join("rust-feh-scanner-test");
+        let dir = scanner_test_dir("rust-feh-scanner-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("photo.jpg"), b"x").unwrap();
@@ -195,12 +326,31 @@ mod tests {
         assert!(warning.starts_with("Scan skip:"));
     }
 
+    #[test]
+    #[ignore = "manual: times full venice folder when present"]
+    fn bench_venice_scan_skips_mp4_quickly() {
+        use std::time::Instant;
+        let dir = Path::new("/home/kkk/Desktop/venice");
+        if !dir.is_dir() {
+            return;
+        }
+        let start = Instant::now();
+        let r = scan_images(dir, true, true);
+        eprintln!(
+            "venice: {} entries, {} skipped, {:?}",
+            r.entries.len(),
+            r.inventory.non_image_skipped,
+            start.elapsed()
+        );
+        assert!(start.elapsed().as_secs() < 30, "venice scan should finish in <30s after mp4 skip");
+    }
+
     #[cfg(unix)]
     #[test]
     fn format_walk_warning_permission_denied_prefix() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join("rust-feh-format-walk-perms");
+        let dir = scanner_test_dir("rust-feh-format-walk-perms");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let secret = dir.join("secret");

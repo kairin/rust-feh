@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: MIT
 //! Pure UI/business logic testable without egui (feature 001 validation).
 
-use crate::types::{FileStatus, ImageEntry, ListViewMode, ScanInventory, SortMode, WindowSizePreset};
+use crate::types::{
+    AssetStatus, FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode,
+    OutputPolicy, ProcessedResult, ScanInventory, SortMode, WindowSizePreset,
+};
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const FEH_MISSING_MSG: &str = "feh not found — install with `sudo apt install feh`";
+/// Per-entry launch panel indicator when feh is absent (FR-011).
+pub const FEH_NOT_INSTALLED_LAUNCH_MSG: &str = "feh not installed";
 
 pub const WINDOW_MIN_RESIZABLE: (f32, f32) = (640.0, 480.0);
 pub const WINDOW_MAX_RESIZABLE: (f32, f32) = (8192.0, 8192.0);
@@ -42,15 +51,197 @@ pub fn feh_missing_status() -> String {
     FEH_MISSING_MSG.to_string()
 }
 
-/// Temp file path for feh `--filelist` (overwritten each launch).
+pub fn feh_not_installed_launch_status() -> String {
+    FEH_NOT_INSTALLED_LAUNCH_MSG.to_string()
+}
+
+fn runtime_cache_dir() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(".cache").join("rust-feh")
+}
+
+/// Writable path for feh `--filelist` (overwritten each launch).
 pub fn feh_filelist_temp_path() -> PathBuf {
-    std::env::temp_dir().join(format!("rust-feh-filelist-{}.txt", std::process::id()))
+    runtime_cache_dir().join(format!("filelist-{}.txt", std::process::id()))
+}
+
+/// Per-entry feh filelist path so Launch All can write distinct lists concurrently.
+pub fn feh_entry_filelist_path(entry_id: &str) -> PathBuf {
+    runtime_cache_dir().join(format!("filelist-{}-{}.txt", std::process::id(), entry_id))
+}
+
+/// Scratch directory for Prepare Fast materialized JPEGs (session-scoped).
+pub fn prepare_fast_work_dir() -> PathBuf {
+    runtime_cache_dir().join(format!("prepare-fast-{}", std::process::id()))
+}
+
+/// Persistence location for configured multi-feh launch entries.
+pub fn launch_list_path() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(".config")
+        .join("rust-feh")
+        .join("launch-entries.json")
+}
+
+/// Persist launch entries using a temp-file + rename write.
+pub fn save_launch_list(list: &FehLaunchList) -> Result<(), String> {
+    let path = launch_list_path();
+    let Some(parent) = path.parent() else {
+        return Err(format!("Invalid launch-list path: {}", path.display()));
+    };
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+    let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let data = serde_json::to_vec_pretty(list)
+        .map_err(|e| format!("Failed to serialize launch entries: {e}"))?;
+    std::fs::write(&temp, data)
+        .map_err(|e| format!("Failed to write launch entries {}: {e}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Failed to save launch entries {}: {e}", path.display())
+    })?;
+    Ok(())
+}
+
+/// Load persisted launch entries; missing or corrupt files recover to an empty list.
+pub fn load_launch_list() -> FehLaunchList {
+    let path = launch_list_path();
+    let Ok(data) = std::fs::read(&path) else {
+        return FehLaunchList::default();
+    };
+    match serde_json::from_slice(&data) {
+        Ok(list) => list,
+        Err(e) => {
+            eprintln!(
+                "[rust-feh] warning: corrupt launch-entries.json at {}: {e}; starting with empty list",
+                path.display()
+            );
+            FehLaunchList::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryLaunchState {
+    pub launchable: bool,
+    pub status: String,
+}
+
+/// Decode full image bytes to native-dimension RGBA8 pixels for clipboard copy.
+pub fn decode_image_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| format!("Failed to decode image: {e}"))?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok((width, height, rgba.into_raw()))
+}
+
+/// Copy decoded image data to the system clipboard.
+pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read image: {e}"))?;
+    let (width, height, rgba) = decode_image_to_rgba(&bytes)?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| format!("Clipboard unavailable: {e}"))?;
+    let image = arboard::ImageData {
+        width: width as usize,
+        height: height as usize,
+        bytes: std::borrow::Cow::Owned(rgba),
+    };
+    clipboard
+        .set_image(image)
+        .map_err(|e| format!("Clipboard copy failed: {e}"))?;
+    Ok(format!(
+        "Copied image to clipboard: {}",
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+    ))
+}
+
+fn entry_folder_images<'a>(entry: &FehLaunchEntry, images: &'a [ImageEntry]) -> Vec<&'a Path> {
+    let Some(folder) = entry.folder_path.as_deref() else {
+        return Vec::new();
+    };
+    images
+        .iter()
+        .filter(|image| image.path.parent().is_some_and(|p| p == folder))
+        .map(|image| image.path.as_path())
+        .collect()
+}
+
+/// Build deterministic feh filelist paths for one launch entry from current scanned images.
+pub fn build_entry_filelist(entry: &FehLaunchEntry, images: &[ImageEntry]) -> Vec<PathBuf> {
+    entry_folder_images(entry, images)
+        .into_iter()
+        .map(Path::to_path_buf)
+        .collect()
+}
+
+fn entry_launch_block_reason(entry: &FehLaunchEntry) -> Option<&'static str> {
+    let folder = entry.folder_path.as_deref()?;
+    if folder.is_dir() {
+        None
+    } else {
+        Some("Folder not found")
+    }
+}
+
+/// Explain whether a configured launch entry can be launched now.
+pub fn entry_is_launchable(
+    entry: &FehLaunchEntry,
+    images: &[ImageEntry],
+    feh_available: bool,
+) -> EntryLaunchState {
+    if !feh_available {
+        return EntryLaunchState {
+            launchable: false,
+            status: feh_not_installed_launch_status(),
+        };
+    }
+    if entry.folder_path.is_none() {
+        return EntryLaunchState {
+            launchable: false,
+            status: "Select a folder".to_string(),
+        };
+    }
+    if let Some(reason) = entry_launch_block_reason(entry) {
+        return EntryLaunchState {
+            launchable: false,
+            status: reason.to_string(),
+        };
+    }
+    let count = entry_folder_images(entry, images).len();
+    if count == 0 {
+        return EntryLaunchState {
+            launchable: false,
+            status: "No images".to_string(),
+        };
+    }
+    EntryLaunchState {
+        launchable: true,
+        status: format!("{count} images"),
+    }
 }
 
 /// Write one absolute path per line for feh `--filelist`.
 pub fn write_feh_filelist(paths: impl IntoIterator<Item = impl AsRef<Path>>) -> std::io::Result<usize> {
-    let dest = feh_filelist_temp_path();
-    let mut file = std::fs::File::create(&dest)?;
+    write_feh_filelist_to(feh_filelist_temp_path(), paths)
+}
+
+/// Write a feh `--filelist` to an explicit destination.
+pub fn write_feh_filelist_to(
+    dest: impl AsRef<Path>,
+    paths: impl IntoIterator<Item = impl AsRef<Path>>,
+) -> std::io::Result<usize> {
+    let dest = dest.as_ref();
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::File::create(dest)?;
     let mut count = 0usize;
     for path in paths {
         writeln!(file, "{}", path.as_ref().display())?;
@@ -501,24 +692,342 @@ pub fn refresh_entry_and_inventory(
     ScanInventory::from_entries(entries, non_image_skipped, magick_truncated)
 }
 
+/// Direct add new/optimized/processed asset to in-memory list without full re-scan (T014, FR-005, clarify).
+/// Used after tool ops and prepare-fast materialize so assets appear immediately.
+pub fn add_or_update_asset_in_inventory(
+    images: &mut Vec<ImageEntry>,
+    new_path: PathBuf,
+    asset_status: AssetStatus,
+) {
+    if images.iter().any(|e| e.path == new_path) {
+        // update status if exists
+        if let Some(e) = images.iter_mut().find(|e| e.path == new_path) {
+            e.asset_status = asset_status;
+        }
+        return;
+    }
+    // new entry, lazy size etc; status native for now
+    images.push(ImageEntry::with_asset_status(
+        new_path,
+        FileStatus::NativeListed,
+        asset_status,
+    ));
+}
+
 /// Root tree folder listed count should match inventory native_listed (SC-005).
 pub fn tree_root_listed_matches_inventory(tree: &FolderTreeNode, inventory: &ScanInventory) -> bool {
     tree.relative_path == "." && tree.listed_count == inventory.native_listed
 }
 
 /// Mark converted rows and rebuild inventory after scanner walk.
+/// Fast path after scan: no per-file converted-sibling stat storm (feh-first).
+pub fn finalize_scan_entries_fast(
+    entries: Vec<ImageEntry>,
+    non_image_skipped: usize,
+    magick_truncated: bool,
+) -> (Vec<ImageEntry>, ScanInventory) {
+    let inventory = ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
+    (entries, inventory)
+}
+
+/// Background pass: mark converted / *_processed siblings (can be slow on huge folders).
+pub fn apply_converted_detection(entries: &mut [ImageEntry]) -> usize {
+    let mut n = 0usize;
+    for entry in entries.iter_mut() {
+        if detect_converted_status(&entry.path) {
+            entry.status = FileStatus::Converted;
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn finalize_scan_entries(
     mut entries: Vec<ImageEntry>,
     non_image_skipped: usize,
     magick_truncated: bool,
 ) -> (Vec<ImageEntry>, ScanInventory) {
-    for entry in &mut entries {
-        if detect_converted_status(&entry.path) {
-            entry.status = FileStatus::Converted;
+    apply_converted_detection(&mut entries);
+    finalize_scan_entries_fast(entries, non_image_skipped, magick_truncated)
+}
+
+/// Compute final output path for an image operation (pure, FR-003).
+pub fn compute_output_path(
+    source: &Path,
+    stem_suffix: &str,
+    ext: &str,
+    policy: &OutputPolicy,
+) -> Result<PathBuf, String> {
+    let parent = source.parent().unwrap_or(Path::new("."));
+    let stem = source
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let ext = ext.trim_start_matches('.');
+    match policy {
+        OutputPolicy::NewSubfolder { name } => {
+            let dir = parent.join(name);
+            Ok(dir.join(format!("{stem}{stem_suffix}.{ext}")))
+        }
+        OutputPolicy::SuffixedSibling { suffix } => Ok(parent.join(format!("{stem}{suffix}.{ext}"))),
+        OutputPolicy::InPlaceWithBackup { .. } => {
+            let orig_ext = source
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ext.to_string());
+            Ok(parent.join(format!("{stem}.{orig_ext}")))
         }
     }
-    let inventory = ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
-    (entries, inventory)
+}
+
+/// Raw RGBA preview buffer for crop (no egui types).
+pub struct CropPreviewPixels {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+pub fn crop_preview_pixels(source: &Path, geometry: &str, max_dim: u32) -> Result<CropPreviewPixels, String> {
+    use crate::image_proc::parse_crop_geometry;
+    let rect = parse_crop_geometry(geometry)?;
+    let img = image::open(source).map_err(|e| e.to_string())?;
+    let (x, y, w, h) = {
+        let x = rect.x.max(0) as u32;
+        let y = rect.y.max(0) as u32;
+        if x >= img.width() || y >= img.height() {
+            return Err("Crop origin outside image".into());
+        }
+        let w = rect.width.min(img.width() - x);
+        let h = rect.height.min(img.height() - y);
+        if w == 0 || h == 0 {
+            return Err("Crop region empty".into());
+        }
+        (x, y, w, h)
+    };
+    let cropped = img.crop_imm(x, y, w, h);
+    let scale = (max_dim as f32 / cropped.width().max(cropped.height()) as f32).min(1.0);
+    let preview = if scale < 1.0 {
+        let nw = (cropped.width() as f32 * scale).max(1.0) as u32;
+        let nh = (cropped.height() as f32 * scale).max(1.0) as u32;
+        cropped.resize(nw, nh, image::imageops::FilterType::Triangle)
+    } else {
+        cropped
+    };
+    Ok(CropPreviewPixels {
+        width: preview.width(),
+        height: preview.height(),
+        rgba: preview.to_rgba8().into_raw(),
+    })
+}
+
+/// Expand rename pattern for ordered paths (FR-007).
+pub fn expand_rename_pattern(
+    pattern: &str,
+    sources: &[PathBuf],
+    counter_start: u32,
+) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut out = Vec::with_capacity(sources.len());
+    let mut seen = HashSet::new();
+    for (i, src) in sources.iter().enumerate() {
+        let name = expand_one_rename_token(pattern, src, counter_start + i as u32)?;
+        if !seen.insert(name.clone()) {
+            return Err(format!("Name collision: {name}"));
+        }
+        out.push((src.clone(), name));
+    }
+    Ok(out)
+}
+
+fn expand_one_rename_token(pattern: &str, source: &Path, counter: u32) -> Result<String, String> {
+    let stem = source
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let ext = source
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let date = chrono_date_yyyymmdd();
+    let mut result = pattern.to_string();
+    result = replace_counter(&result, counter)?;
+    result = result.replace("{original}", &stem);
+    result = result.replace("{ext}", &ext);
+    result = result.replace("{date:YYYYMMDD}", &date);
+    result = result.replace("{date:YYYY}", &date[..4.min(date.len())]);
+    Ok(if ext.is_empty() || result.ends_with(&format!(".{ext}")) {
+        result
+    } else {
+        format!("{result}.{ext}")
+    })
+}
+
+fn replace_counter(s: &str, counter: u32) -> Result<String, String> {
+    let mut out = s.to_string();
+    while let Some(start) = out.find("{counter:") {
+        let rest = &out[start + 10..];
+        let end = rest
+            .find('}')
+            .ok_or_else(|| "unclosed {counter:NN}".to_string())?;
+        let width: usize = rest[..end]
+            .parse()
+            .map_err(|_| "invalid counter width".to_string())?;
+        let padded = format!("{counter:0width$}");
+        out.replace_range(start..start + 10 + end + 1, &padded);
+    }
+    if out.contains("{counter}") {
+        out = out.replace("{counter}", &counter.to_string());
+    }
+    Ok(out)
+}
+
+fn chrono_date_yyyymmdd() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Simple UTC date without chrono dep
+    let days = secs / 86400;
+    let (y, m, d) = days_to_ymd(days);
+    format!("{y:04}{m:02}{d:02}")
+}
+
+fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
+    let mut y = 1970u32;
+    loop {
+        let diy = if is_leap(y) { 366 } else { 365 };
+        if days < diy as u64 {
+            break;
+        }
+        days -= diy as u64;
+        y += 1;
+    }
+    let months = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut m = 1u32;
+    for &md in &months {
+        if days < md as u64 {
+            break;
+        }
+        days -= md as u64;
+        m += 1;
+    }
+    (y, m, days as u32 + 1)
+}
+
+fn is_leap(y: u32) -> bool {
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
+}
+
+/// Aggregate per-item batch results into a summary (for UI + tests).
+pub fn aggregate_batch_results(results: &[Result<ProcessedResult, String>]) -> crate::image_proc::BatchSummary {
+    let total = results.len();
+    let succeeded = results.iter().filter(|r| r.is_ok()).count();
+    let failed = total.saturating_sub(succeeded);
+    crate::image_proc::BatchSummary {
+        total,
+        succeeded,
+        failed,
+        skipped: 0,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameApplyOutcome {
+    pub applied: Vec<(PathBuf, PathBuf)>,
+    pub rolled_back: bool,
+    pub error: Option<String>,
+}
+
+/// Apply rename pairs atomically; rolls back prior renames on first failure.
+pub fn apply_rename_pairs(pairs: &[(PathBuf, String)]) -> RenameApplyOutcome {
+    let mut applied = Vec::new();
+    for (old, new_name) in pairs {
+        let parent = old.parent().unwrap_or(Path::new("."));
+        let dest = parent.join(new_name);
+        if let Err(e) = std::fs::rename(old, &dest) {
+            for (from, to) in applied.iter().rev() {
+                let _ = std::fs::rename(to, from);
+            }
+            return RenameApplyOutcome {
+                applied,
+                rolled_back: true,
+                error: Some(format!("{}: {e}", old.display())),
+            };
+        }
+        applied.push((old.clone(), dest));
+    }
+    RenameApplyOutcome {
+        applied,
+        rolled_back: false,
+        error: None,
+    }
+}
+
+pub fn format_image_tools_log(result: &ProcessedResult) -> String {
+    let hit = if result.was_cache_hit { " [cache hit]" } else { "" };
+    format!(
+        "Image tools: {:?} {} -> {}{}",
+        result.operation,
+        result.source_path.display(),
+        result.dest_path.display(),
+        hit
+    )
+}
+
+pub struct JobProgress {
+    pub current: usize,
+    pub total: usize,
+    pub message: String,
+}
+
+pub enum JobMsg<T> {
+    Progress(JobProgress),
+    Item(T),
+    Done,
+    Cancelled,
+}
+
+pub fn spawn_job<F, T>(
+    items: Vec<PathBuf>,
+    cancel: Arc<AtomicBool>,
+    work: F,
+) -> mpsc::Receiver<JobMsg<T>>
+where
+    F: Fn(&Path) -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let total = items.len();
+        for (i, path) in items.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(JobMsg::Cancelled);
+                return;
+            }
+            let _ = tx.send(JobMsg::Progress(JobProgress {
+                current: i,
+                total,
+                message: path.display().to_string(),
+            }));
+            match work(path) {
+                Ok(v) => {
+                    let _ = tx.send(JobMsg::Item(v));
+                }
+                Err(e) => {
+                    let _ = tx.send(JobMsg::Progress(JobProgress {
+                        current: i + 1,
+                        total,
+                        message: format!("skip: {e}"),
+                    }));
+                }
+            }
+        }
+        let _ = tx.send(JobMsg::Done);
+    });
+    rx
 }
 
 #[cfg(test)]

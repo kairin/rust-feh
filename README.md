@@ -39,6 +39,32 @@ From-scratch Rust successor to archived **nfeh** — same broad idea (pick from 
 - Rust (stable) — **install via rustup** (see below)
 - `feh` (for viewing): `sudo apt install feh`
 - Optional: `magick` or `convert` (ImageMagick) for more format options in image tools
+- Optional: `magick-cache` (ImageMagick 7+) for persistent cache and **Prepare Fast feh** (see below)
+
+### Image Tools & Magick Cache
+
+Inspector → **Image actions** → **Image Tools** panel:
+
+- **Single / Batch**: resize (fit modes, filter, quality), numeric crop with live preview, format convert; safe output to subfolder or suffix; in-place requires double confirmation + backup.
+- **Rename**: pattern tokens `{original}`, `{ext}`, `{counter:03}`, `{date:YYYYMMDD}` with live preview.
+- **Cache**: enable cache (root, passkey, TTL); automatic put/get on ops; **Pre-cache folder** and **Prepare Fast feh** (background jobs); **Launch feh on optimized** after prepare-fast.
+
+`magick-cache` is optional but required for persistent cache and prepare-fast acceleration. It is **not** in the default `imagemagick` apt package — build from source. Full install, passkey setup, in-app configuration, verification, and troubleshooting:
+
+**→ [docs/MAGICK-CACHE-SETUP.md](docs/MAGICK-CACHE-SETUP.md)**
+
+Quick reference after install:
+
+```fish
+# One-time (external; rust-feh does not run create for you)
+mkdir -p ~/.cache/rust-feh-magick
+echo -n "your-secret-passkey" > ~/.magick-cache-passkey
+chmod 600 ~/.magick-cache-passkey
+magick-cache -passkey ~/.magick-cache-passkey create ~/.cache/rust-feh-magick
+
+# In app: Image Tools → Cache → enable, pick root + passkey, Apply cache settings
+# Verify: cargo test --test integration_image_tools cache_repeat_resize_faster_when_cache_available -- --nocapture
+```
 
 ### Install Rust (do this first)
 
@@ -97,6 +123,7 @@ The **Inspector** (right panel) shows what is installed and how each format is r
 |------|-----------|------|
 | **feh** | Yes | Open images, slideshow, navigate the filtered filelist (**Inspector → Image actions**) |
 | **ImageMagick** (`magick` / `convert`) | Optional | Magick-detect unlisted formats at scan; convert/view exotic types |
+| **magick-cache** | Optional | Persistent image cache + Prepare Fast feh ([setup guide](docs/MAGICK-CACHE-SETUP.md)) |
 | **image crate** | Built-in | Quick resize demo — no external deps |
 
 After installing a missing tool, click **Recheck tools on PATH** in **Inspector → Dependencies** (not a top-level Tools menu).
@@ -162,7 +189,8 @@ Then you can run `./rust-feh` from the root.
 - Quick resize demo (50%, powered by the `image` crate; `*_processed.*` tracked in inventory)
 - **Dependencies** + **Format discovery** in Inspector: PATH status, install hints, per-format routing
 - **Activity log** (detachable): selectable text, Copy log / Clear logs; **Session status** has Copy status + rotating speed tips
-- **Background scanning**: UI stays responsive on large or network paths; NAS/GVFS scans skip ImageMagick identify
+- **Feh-first scanning**: extension-only scan by default (~milliseconds on large photo folders); list fills incrementally; **Open in feh** works while scan runs; optional “Detect exotic formats (slow)” for ImageMagick deep scan
+- **Background scanning**: UI stays responsive on large or network paths; NAS/GVFS never run per-file ImageMagick identify
 - **Session status** scan pulse + animated dots during scan
 
 Further work is possible in areas such as thumbnail grid, richer tools, or config, but no specific features are committed.
@@ -183,6 +211,8 @@ See the approved plan for full details. Core modules (`scanner`, `image_proc`, `
 | [specs/008-tool-capabilities-panel/spec.md](specs/008-tool-capabilities-panel/spec.md) | Tools panel (retroactive) |
 | [specs/009-external-tool-runtime/spec.md](specs/009-external-tool-runtime/spec.md) | PATH detect + recheck (supersedes 002) |
 | [specs/012-ui-feedback-polish/](specs/012-ui-feedback-polish/) | Status feedback, NAS scan policy, detach log |
+| [docs/MAGICK-CACHE-SETUP.md](docs/MAGICK-CACHE-SETUP.md) | Install magick-cache, passkey, rust-feh cache config, verification |
+| [specs/013-image-tools-magick-cache/quickstart.md](specs/013-image-tools-magick-cache/quickstart.md) | Image Tools end-to-end validation scenarios |
 
 ## Verification
 
