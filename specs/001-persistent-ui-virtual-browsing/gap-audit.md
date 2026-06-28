@@ -17,9 +17,9 @@ Run: `./scripts/validate-feature-001.sh` — see `validation-results.md`.
 
 | FR-ID | Code | Validated | Method |
 |-------|------|-----------|--------|
-| FR-001 | pass | auto | static TopBottomPanel checks |
+| FR-001 | pass | auto | static persistent top controls + inspector checks |
 | FR-002 | pass | auto | static action buttons in top panel |
-| FR-003 | pass | auto | bottom status panel |
+| FR-003 | pass | auto | inspector session-status panel |
 | FR-004 | pass | auto | show_rows + scan_10k test |
 | FR-005 | pass | auto | sc003_filter_10k_under_200ms |
 | FR-006 | pass | auto | showing_count_label + v4 test |
@@ -40,7 +40,7 @@ Run: `./scripts/validate-feature-001.sh` — see `validation-results.md`.
 | SC | Validated | Notes |
 |----|-----------|-------|
 | SC-001 | auto | static layout checks |
-| SC-002 | **manual** | 60fps scroll — requires GUI session ([003 validation](../003-gui-performance-validation/validation-results.md) pending) |
+| SC-002 | **pass** | 60fps scroll — **pass** 2026-06-28: 10k fixture, 5s rapid scrollbar drag smooth, no freeze ([003 validation](../003-gui-performance-validation/validation-results.md)) |
 | SC-003 | auto | filter 10k <200ms test |
 | SC-004 | **pass** | RSS &lt;150MB @10k — **pass** 2026-06-22: peak ~126 MB @10k, ~124 MB @1k ([003 RSS audit](../003-gui-performance-validation/validation-results.md)) |
 | SC-005 | auto | v3 status test |

@@ -9,7 +9,7 @@ use rust_feh::tool_caps::{feh_spawn_unavailable, DepKind, FormatRoute, ToolCapab
 use rust_feh::types::{
     AssetStatus, CacheConfig, FehLaunchEntry, FehLaunchList, FitMode, Filter, ImageEntry,
     ImageOperation, ListViewMode, OutputPolicy, PreparedFastSet, ProcessedResult, ScanInventory,
-    SortMode, WindowSizePreset,
+    SortMode, WindowPreferences, WindowSizePreset,
 };
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, apply_converted_detection, apply_rename_pairs,
@@ -21,12 +21,12 @@ use rust_feh::ui_logic::{
     finalize_scan_entries_fast,
     folder_line_suffix, folder_tree_display_name, format_image_tools_log, format_inventory_bar,
     inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
-    list_view_mode_label, load_launch_list, post_scan_status, refresh_entry_and_inventory,
-    relative_folder, save_launch_list, scan_magick_enabled, showing_count_label, sort_mode_label,
-    spawn_job, tree_file_glyph, tree_visible_rows, window_preset_dimensions, window_preset_label,
-    write_feh_filelist, write_feh_filelist_to, JobMsg, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY,
-    FEH_VIEWER_ZOOM,
-    WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
+    list_view_mode_label, load_launch_list, load_window_prefs, post_scan_status,
+    refresh_entry_and_inventory, relative_folder, save_launch_list, save_window_prefs,
+    scan_magick_enabled, showing_count_label,
+    sort_mode_label, spawn_job, tree_file_glyph, tree_visible_rows, window_preset_dimensions,
+    window_preset_label, write_feh_filelist, write_feh_filelist_to, JobMsg, TreeRow, TreeRowKind,
+    FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM, WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -45,6 +45,7 @@ fn create_rust_feh_app(
     deps_section_open: bool,
     tools_panel_ok: bool,
 ) -> Box<dyn App> {
+    let window_prefs = load_window_prefs();
     Box::new(RustFehApp {
         current_dir: None,
         images: vec![],
@@ -61,10 +62,11 @@ fn create_rust_feh_app(
         scroll_generation: 0,
         sort_mode: SortMode::default(),
         prior_sort_mode: SortMode::default(),
-        window_size: WindowSizePreset::default(),
-        prior_window_size: WindowSizePreset::default(),
-        window_resizable: true,
-        prior_window_resizable: true,
+        window_size: window_prefs.preset,
+        prior_window_size: window_prefs.preset,
+        window_resizable: window_prefs.resizable,
+        prior_window_resizable: window_prefs.resizable,
+        window_prefs_applied: false,
         scan_inventory: None,
         list_view_mode: ListViewMode::default(),
         tree_expanded_paths: default_tree_expanded(),
@@ -361,6 +363,8 @@ struct RustFehApp {
     prior_window_size: WindowSizePreset,
     window_resizable: bool,
     prior_window_resizable: bool,
+    /// False until the loaded window preferences are applied to the viewport on the first frame.
+    window_prefs_applied: bool,
     scan_inventory: Option<ScanInventory>,
     list_view_mode: ListViewMode,
     tree_expanded_paths: HashSet<String>,
@@ -645,6 +649,28 @@ impl RustFehApp {
         let size = self.clamp_viewport_size(egui::vec2(w, h));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
         self.apply_window_resize_policy(ctx, size);
+    }
+
+    /// Apply persisted window preferences to the viewport once, on the first frame.
+    /// Startup seeds `prior_*` equal to the loaded values, so the change-detection
+    /// branches in `sync_frame_input_state` never fire for restored prefs; without
+    /// this the saved preset/resizable state stays in memory but is never pushed to
+    /// the OS window (FR-008 / SC-005).
+    fn apply_startup_window_prefs(&mut self, ctx: &egui::Context) {
+        if self.window_prefs_applied {
+            return;
+        }
+        self.window_prefs_applied = true;
+        self.apply_window_preset(ctx);
+        self.log(format!(
+            "Restored window preference: {} ({})",
+            window_preset_label(self.window_size),
+            if self.window_resizable {
+                "resizable"
+            } else {
+                "locked"
+            }
+        ));
     }
 
     fn refresh_tool_caps(&mut self) {
@@ -1083,6 +1109,18 @@ impl RustFehApp {
     fn persist_launch_entries(&mut self) {
         if let Err(e) = save_launch_list(&self.launch_entries) {
             self.log(format!("Failed to save launch entries: {e}"));
+            self.status = e;
+        }
+    }
+
+    fn persist_window_prefs(&mut self) {
+        let prefs = WindowPreferences {
+            version: 1,
+            preset: self.window_size,
+            resizable: self.window_resizable,
+        };
+        if let Err(e) = save_window_prefs(&prefs) {
+            self.log(format!("Failed to save window preferences: {e}"));
             self.status = e;
         }
     }
@@ -2856,6 +2894,7 @@ impl RustFehApp {
         if self.window_size != self.prior_window_size {
             self.prior_window_size = self.window_size;
             self.apply_window_preset(ctx);
+            self.persist_window_prefs();
             self.log(format!(
                 "Window size set to {}",
                 window_preset_label(self.window_size)
@@ -2865,6 +2904,7 @@ impl RustFehApp {
             self.prior_window_resizable = self.window_resizable;
             let lock_size = self.current_viewport_size(ctx);
             self.apply_window_resize_policy(ctx, lock_size);
+            self.persist_window_prefs();
             self.log(if self.window_resizable {
                 "Window resizing enabled".to_string()
             } else {
@@ -3206,6 +3246,7 @@ impl RustFehApp {
 
 impl App for RustFehApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.apply_startup_window_prefs(ctx);
         self.maybe_load_start_folder();
         self.poll_scan_complete(ctx);
         self.poll_tools_job(ctx);

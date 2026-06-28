@@ -188,9 +188,9 @@ and highlighted, the status bar shows its name, but no external feh window appea
   status bar shows a descriptive process error (e.g., "Process error: …") and no crash
   occurs.
 - What happens when the window is resized with a large collection loaded? egui panels
-  adapt automatically; persistent top/bottom panels remain visible and the virtualized
-  list continues to render only visible rows. No explicit resize handling is required
-  beyond standard egui layout behavior.
+  adapt automatically; persistent top controls and the right inspector/session-status
+  region remain visible and the virtualized list continues to render only visible rows.
+  No explicit resize handling is required beyond standard egui layout behavior.
 - What happens when a filename contains Unicode or special characters? Filter matching
   uses case-insensitive substring comparison on the UTF-8 filename as displayed; no
   regex metacharacter interpretation.
@@ -207,10 +207,10 @@ and highlighted, the status bar shows its name, but no external feh window appea
 - **FR-002**: When a folder is loaded, the application MUST display primary action buttons
   (Open in feh, Set as wallpaper, Quick resize) in the persistent non-scrolling top
   region, always visible regardless of image list length.
-- **FR-003**: The bottom status bar MUST display the current status message and the
-  image counter (FR-006). When an image is selected, the top panel MAY also show the
-  selection path for convenience. All status information MUST be in a persistent
-  non-scrolling region.
+- **FR-003**: A persistent non-scrolling status region MUST display the current status
+  message and image counter (FR-006). In the current layout this lives in the right
+  inspector/session-status panel. When an image is selected, the top panel MAY also show
+  the selection path for convenience.
 - **FR-004**: The image list MUST render only the items currently visible in the
   scrollable viewport (via egui `show_rows` virtualization), not all loaded images.
   Rendering cost MUST NOT scale with total image count. Buffer rows above/below the
@@ -219,10 +219,10 @@ and highlighted, the status bar shows its name, but no external feh window appea
   insensitive UTF-8 substring match, no regex interpretation). Filtering MUST complete
   in under 200ms for collections up to 20,000 images, measured from the last keystroke.
   When the filter term changes, the list scroll position MUST reset to the top.
-- **FR-006**: The bottom status bar MUST always show the count of displayed vs. total
-  images in the format "Showing X / Y images" (e.g., "Showing 42 / 10000 images"),
+- **FR-006**: The persistent status region MUST always show the count of displayed vs.
+  total images in the format "Showing X / Y images" (e.g., "Showing 42 / 10000 images"),
   including the zero-match case ("Showing 0 / N images"). The counter MUST NOT be placed
-  in the scrollable central panel.
+  in the scrollable central list area.
 - **FR-007**: When a folder finishes loading with one or more images, the first image
   MUST be selected and highlighted in the list, but the application MUST NOT
   automatically launch feh. When a folder finishes loading with zero images, no image
@@ -242,10 +242,10 @@ and highlighted, the status bar shows its name, but no external feh window appea
   central (scrollable) area, collapsed by default. When expanded with zero log entries,
   it MUST display "(no debug messages yet)".
 - **FR-010**: The recursive subfolder toggle MUST trigger a rescan when changed (toolbar
-  and View menu checkbox MUST behave identically). During sync scanning, controls in
-  top/bottom panels MUST remain visible. The status bar MUST show "Scanning…" while
-  `scanning == true`. Brief render-loop stall during sync scan is acceptable; async
-  scanning is deferred to Area 6. Scanning MUST complete in under 10 seconds for
+  and View menu checkbox MUST behave identically). During sync scanning, top controls and
+  the inspector/session-status region MUST remain visible. The status region MUST show
+  "Scanning…" while `scanning == true`. Brief render-loop stall during sync scan is
+  acceptable; async scanning is deferred to Area 6. Scanning MUST complete in under 10 seconds for
   20,000 images on a modern workstation.
 - **FR-011**: The menu bar (File, View, Tools) MUST provide functional equivalents of
   toolbar actions: File → "Choose folder..." opens the folder picker; File → "Rescan"
@@ -291,8 +291,9 @@ and highlighted, the status bar shows its name, but no external feh window appea
   highlighted with its filename in the status, and no external feh window appears
   until the user explicitly clicks "Open in feh". Verification is scoped to the
   application's own spawn behavior, not pre-existing feh windows from other processes.
-- **SC-006**: The "Showing X / Y images" counter is visible in the bottom status bar
-  without scrolling, for all folder states (loaded, filtered, empty).
+- **SC-006**: The "Showing X / Y images" counter is visible in the persistent
+  inspector/session-status region without scrolling, for all folder states (loaded,
+  filtered, empty).
 - **SC-007**: With feh absent from PATH, feh-dependent buttons are disabled at startup
   and no process spawn is attempted when they are clicked.
 

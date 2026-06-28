@@ -3,12 +3,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use rust_feh::types::{AssetStatus, FehLaunchEntry, FehLaunchList, ImageEntry, OutputPolicy};
+use rust_feh::types::{
+    AssetStatus, FehLaunchEntry, FehLaunchList, ImageEntry, OutputPolicy, WindowPreferences,
+    WindowSizePreset,
+};
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, aggregate_batch_results, build_entry_filelist,
     compute_output_path, copy_image_to_clipboard, crop_preview_pixels, decode_image_to_rgba,
-    entry_is_launchable, expand_rename_pattern, load_launch_list, save_launch_list,
-    write_feh_filelist_to,
+    entry_is_launchable, expand_rename_pattern, load_launch_list, load_window_prefs,
+    save_launch_list, save_window_prefs, write_feh_filelist_to,
 };
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
@@ -170,6 +173,48 @@ fn test_launch_list_corrupt_json() {
     fs::write(config.join("launch-entries.json"), b"not-json").unwrap();
 
     assert_eq!(load_launch_list(), FehLaunchList::default());
+
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn window_prefs_round_trip() {
+    let _guard = HOME_LOCK.lock().unwrap();
+    let home = temp_test_dir("window-prefs-roundtrip");
+    std::env::set_var("HOME", &home);
+
+    let prefs = WindowPreferences {
+        version: 1,
+        preset: WindowSizePreset::Large,
+        resizable: false,
+    };
+    save_window_prefs(&prefs).unwrap();
+    assert_eq!(load_window_prefs(), prefs);
+
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn window_prefs_missing_returns_default() {
+    let _guard = HOME_LOCK.lock().unwrap();
+    let home = temp_test_dir("window-prefs-missing");
+    std::env::set_var("HOME", &home);
+
+    assert_eq!(load_window_prefs(), WindowPreferences::default());
+
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn window_prefs_corrupt_returns_default() {
+    let _guard = HOME_LOCK.lock().unwrap();
+    let home = temp_test_dir("window-prefs-corrupt");
+    std::env::set_var("HOME", &home);
+    let config = home.join(".config/rust-feh");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(config.join("window-prefs.json"), b"not-json").unwrap();
+
+    assert_eq!(load_window_prefs(), WindowPreferences::default());
 
     let _ = fs::remove_dir_all(&home);
 }

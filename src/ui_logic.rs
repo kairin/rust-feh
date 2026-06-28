@@ -3,7 +3,7 @@
 
 use crate::types::{
     AssetStatus, FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode,
-    OutputPolicy, ProcessedResult, ScanInventory, SortMode, WindowSizePreset,
+    OutputPolicy, ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
@@ -121,6 +121,54 @@ pub fn load_launch_list() -> FehLaunchList {
                 path.display()
             );
             FehLaunchList::default()
+        }
+    }
+}
+
+/// Persistence location for window sizing preferences (feature 006, FR-008).
+pub fn window_prefs_path() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(".config")
+        .join("rust-feh")
+        .join("window-prefs.json")
+}
+
+/// Persist window preferences using a temp-file + rename write.
+pub fn save_window_prefs(prefs: &WindowPreferences) -> Result<(), String> {
+    let path = window_prefs_path();
+    let Some(parent) = path.parent() else {
+        return Err(format!("Invalid window-prefs path: {}", path.display()));
+    };
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+    let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let data = serde_json::to_vec_pretty(prefs)
+        .map_err(|e| format!("Failed to serialize window preferences: {e}"))?;
+    std::fs::write(&temp, data)
+        .map_err(|e| format!("Failed to write window preferences {}: {e}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Failed to save window preferences {}: {e}", path.display())
+    })?;
+    Ok(())
+}
+
+/// Load window preferences; missing or corrupt files recover to defaults.
+pub fn load_window_prefs() -> WindowPreferences {
+    let path = window_prefs_path();
+    let Ok(data) = std::fs::read(&path) else {
+        return WindowPreferences::default();
+    };
+    match serde_json::from_slice(&data) {
+        Ok(prefs) => prefs,
+        Err(e) => {
+            eprintln!(
+                "[rust-feh] warning: corrupt window-prefs.json at {}: {e}; using defaults",
+                path.display()
+            );
+            WindowPreferences::default()
         }
     }
 }

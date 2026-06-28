@@ -32,3 +32,4 @@
 ## Notes
 
 - FR-008 persistence is P2 — acceptable for plan split. Ready for `/speckit-plan`.
+- **2026-06-28**: FR-008 / SC-005 window preference persistence IMPLEMENTED (006 round). See `../gap-audit.md`. Automated round-trip tests pass; `WindowPreferences` persisted to `~/.config/rust-feh/window-prefs.json`.
