@@ -64,6 +64,54 @@ pub fn scan_images(dir: &Path, recursive: bool, magick_identify: bool) -> ScanRe
     scan_images_streaming(dir, recursive, magick_identify, |_| {})
 }
 
+struct ScanWalkState<'a> {
+    entries: &'a mut Vec<ImageEntry>,
+    non_image_skipped: &'a mut usize,
+    magick_identify_calls: &'a mut usize,
+    magick_truncated: &'a mut bool,
+    since_last_emit: &'a mut usize,
+    magick_bin: Option<&'a std::path::Path>,
+    magick_identify: bool,
+}
+
+fn classify_walk_file(
+    path: std::path::PathBuf,
+    state: &mut ScanWalkState<'_>,
+    on_partial: &mut impl FnMut(ScanPartial),
+) {
+    if is_native_image(&path) {
+        state.entries.push(ImageEntry::new(path));
+        *state.since_last_emit += 1;
+        if *state.since_last_emit >= SCAN_PROGRESS_EVERY {
+            *state.since_last_emit = 0;
+            on_partial(ScanPartial {
+                entries: state.entries.clone(),
+                non_image_skipped: *state.non_image_skipped,
+                warnings: Vec::new(),
+                magick_truncated: *state.magick_truncated,
+            });
+        }
+        return;
+    }
+    if is_obvious_non_image(&path) {
+        *state.non_image_skipped += 1;
+        return;
+    }
+    if state.magick_identify && *state.magick_identify_calls < MAGICK_IDENTIFY_CAP {
+        if is_magick_image(&path, state.magick_bin) {
+            *state.magick_identify_calls += 1;
+            state
+                .entries
+                .push(ImageEntry::with_status(path, FileStatus::MagickDetected));
+            *state.since_last_emit += 1;
+            return;
+        }
+    } else if state.magick_identify && *state.magick_identify_calls >= MAGICK_IDENTIFY_CAP {
+        *state.magick_truncated = true;
+    }
+    *state.non_image_skipped += 1;
+}
+
 /// Extension-first directory walk; optional incremental `on_partial` callbacks.
 pub fn scan_images_streaming(
     dir: &Path,
@@ -83,6 +131,7 @@ pub fn scan_images_streaming(
     } else {
         None
     };
+    let magick_bin_ref = magick_bin.as_deref();
 
     let walker = if recursive {
         WalkDir::new(dir).follow_links(false)
@@ -93,47 +142,20 @@ pub fn scan_images_streaming(
     let mut since_last_emit = 0usize;
     for entry in walker.into_iter() {
         match entry {
-            Ok(e) => {
-                if !e.file_type().is_file() {
-                    continue;
-                }
-                let path = e.path().to_path_buf();
-                if is_native_image(&path) {
-                    entries.push(ImageEntry::new(path));
-                    since_last_emit += 1;
-                    if since_last_emit >= SCAN_PROGRESS_EVERY {
-                        since_last_emit = 0;
-                        on_partial(ScanPartial {
-                            entries: entries.clone(),
-                            non_image_skipped,
-                            warnings: Vec::new(),
-                            magick_truncated,
-                        });
-                    }
-                    continue;
-                }
-                if is_obvious_non_image(&path) {
-                    non_image_skipped += 1;
-                    continue;
-                }
-                if magick_identify && magick_identify_calls < MAGICK_IDENTIFY_CAP {
-                    if is_magick_image(&path, magick_bin.as_deref()) {
-                        magick_identify_calls += 1;
-                        entries.push(ImageEntry::with_status(
-                            path,
-                            FileStatus::MagickDetected,
-                        ));
-                        since_last_emit += 1;
-                        continue;
-                    }
-                } else if magick_identify && magick_identify_calls >= MAGICK_IDENTIFY_CAP {
-                    magick_truncated = true;
-                }
-                non_image_skipped += 1;
+            Ok(e) if e.file_type().is_file() => {
+                let mut state = ScanWalkState {
+                    entries: &mut entries,
+                    non_image_skipped: &mut non_image_skipped,
+                    magick_identify_calls: &mut magick_identify_calls,
+                    magick_truncated: &mut magick_truncated,
+                    since_last_emit: &mut since_last_emit,
+                    magick_bin: magick_bin_ref,
+                    magick_identify,
+                };
+                classify_walk_file(e.path().to_path_buf(), &mut state, &mut on_partial);
             }
-            Err(e) => {
-                warnings.push(format_walk_warning(&e));
-            }
+            Ok(_) => {}
+            Err(e) => warnings.push(format_walk_warning(&e)),
         }
     }
 
@@ -215,7 +237,9 @@ mod tests {
 
     #[test]
     fn scan_skips_obvious_non_images_without_magick_probe() {
-        let dir = std::env::temp_dir().join(format!("rust-feh-skip-video-{}", std::process::id()));
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("scanner-skip-video-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("photo.jpg"), b"x").unwrap();

@@ -14,8 +14,10 @@ use rust_feh::types::{
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, apply_converted_detection, apply_rename_pairs,
     build_entry_filelist, clamp_window_size, copy_image_to_clipboard, crop_preview_pixels,
+    EntryLaunchState,
     default_tree_expanded, entry_is_launchable, expand_rename_pattern, feh_filelist_temp_path,
-    feh_missing_status, feh_not_installed_launch_status, file_name_display, file_status_label,
+    feh_entry_filelist_path, feh_missing_status, feh_not_installed_launch_status,
+    file_name_display, file_status_label, prepare_fast_work_dir,
     finalize_scan_entries_fast,
     folder_line_suffix, folder_tree_display_name, format_image_tools_log, format_inventory_bar,
     inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
@@ -391,6 +393,13 @@ struct RustFehApp {
     format_route_open: HashSet<String>,
     /// Dev/test: auto-load `RUST_FEH_START_FOLDER` once on first frame.
     start_folder_loaded: bool,
+}
+
+enum FehEntryAction {
+    Remove(String),
+    Launch(String),
+    SetFolder(String, Option<PathBuf>),
+    SetLabel(String, Option<String>),
 }
 
 #[derive(Clone, Copy)]
@@ -1147,31 +1156,13 @@ impl RustFehApp {
         self.launch_entry_feh(&entry);
     }
 
-    fn launch_entry_feh(&mut self, entry: &FehLaunchEntry) {
-        if !self.feh_available {
-            self.status = feh_missing_status();
-            return;
-        }
-        let state = entry_is_launchable(entry, &self.images, self.feh_available);
-        if !state.launchable {
-            self.status = format!("Cannot launch: {}", state.status);
-            return;
-        }
-        let paths = build_entry_filelist(entry, &self.images);
-        let start = paths[0].clone();
-        let list_path = std::env::temp_dir().join(format!(
-            "rust-feh-filelist-{}-{}.txt",
-            std::process::id(),
-            entry.id
-        ));
-        let count = match write_feh_filelist_to(&list_path, &paths) {
-            Ok(n) => n,
-            Err(e) => {
-                self.log(format!("Failed to write feh filelist: {e}"));
-                self.status = format!("Failed to prepare feh filelist: {e}");
-                return;
-            }
-        };
+    fn spawn_feh_viewer(
+        &mut self,
+        list_path: &Path,
+        start_at: &Path,
+        log_msg: String,
+        success_status: String,
+    ) {
         let mut cmd = Command::new("feh");
         cmd.arg("--geometry")
             .arg(FEH_VIEWER_GEOMETRY)
@@ -1179,17 +1170,14 @@ impl RustFehApp {
             .arg("--zoom")
             .arg(FEH_VIEWER_ZOOM)
             .arg("--filelist")
-            .arg(&list_path)
+            .arg(list_path)
             .arg("--start-at")
-            .arg(&start);
+            .arg(start_at);
+        self.log(log_msg);
         match cmd.spawn() {
             Ok(child) => {
-                self.log(format!(
-                    "feh launched (pid {:?}) for entry {} ({count} images)",
-                    child.id(),
-                    entry.id
-                ));
-                self.status = format!("Launched feh on {}", state.status);
+                self.log(format!("feh launched (pid {:?})", child.id()));
+                self.status = success_status;
             }
             Err(e) => {
                 self.log(format!("Failed to spawn feh: {e}"));
@@ -1200,6 +1188,34 @@ impl RustFehApp {
                 }
             }
         }
+    }
+
+    fn launch_entry_feh(&mut self, entry: &FehLaunchEntry) {
+        let state = entry_is_launchable(entry, &self.images, self.feh_available);
+        if !state.launchable {
+            self.status = format!("Cannot launch: {}", state.status);
+            return;
+        }
+        let paths = build_entry_filelist(entry, &self.images);
+        let start = paths[0].clone();
+        let list_path = feh_entry_filelist_path(&entry.id);
+        let count = match write_feh_filelist_to(&list_path, &paths) {
+            Ok(n) => n,
+            Err(e) => {
+                self.log(format!("Failed to write feh filelist: {e}"));
+                self.status = format!("Failed to prepare feh filelist: {e}");
+                return;
+            }
+        };
+        self.spawn_feh_viewer(
+            &list_path,
+            &start,
+            format!(
+                "Spawning feh for entry {} ({count} images)",
+                entry.id
+            ),
+            format!("Launched feh on {}", state.status),
+        );
     }
 
     fn launch_all_entries(&mut self) {
@@ -1222,10 +1238,121 @@ impl RustFehApp {
         self.log(format!("Launch All spawned {count} feh instances"));
     }
 
+    fn apply_feh_entry_action(&mut self, action: FehEntryAction) {
+        match action {
+            FehEntryAction::Remove(id) => self.remove_launch_entry(&id),
+            FehEntryAction::Launch(id) => self.launch_entry(&id),
+            FehEntryAction::SetFolder(id, folder) => self.update_entry_folder(&id, folder),
+            FehEntryAction::SetLabel(id, label) => {
+                self.update_entry_label(&id, label.as_deref().unwrap_or(""));
+            }
+        }
+    }
+
+    fn feh_entry_display_label(entry: &FehLaunchEntry) -> String {
+        entry.label.clone().unwrap_or_else(|| {
+            entry
+                .folder_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "(new)".to_string())
+        })
+    }
+
+    fn render_feh_entry_card(
+        ui: &mut egui::Ui,
+        idx: usize,
+        entry: &FehLaunchEntry,
+        state: &EntryLaunchState,
+        candidates: &[PathBuf],
+        action: &mut Option<FehEntryAction>,
+    ) {
+        let display_label = Self::feh_entry_display_label(entry);
+        egui::Frame::group(ui.style())
+            .inner_margin(6.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(format!("#{}: {display_label}", idx + 1));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("×").clicked() {
+                            *action = Some(FehEntryAction::Remove(entry.id.clone()));
+                        }
+                    });
+                });
+                let mut label_buf = entry.label.clone().unwrap_or_default();
+                let placeholder = entry
+                    .folder_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Label".to_string());
+                ui.horizontal(|ui| {
+                    ui.small("Label:");
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut label_buf).hint_text(placeholder))
+                        .changed()
+                    {
+                        let trimmed = label_buf.trim();
+                        let new_label = if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        };
+                        if new_label != entry.label {
+                            *action = Some(FehEntryAction::SetLabel(entry.id.clone(), new_label));
+                        }
+                    }
+                });
+                let current = entry
+                    .folder_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "None selected".to_string());
+                egui::ComboBox::from_id_salt(format!("feh_entry_folder_{}", entry.id))
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(entry.folder_path.is_none(), "None selected")
+                            .clicked()
+                        {
+                            *action = Some(FehEntryAction::SetFolder(entry.id.clone(), None));
+                        }
+                        for cand in candidates {
+                            let selected = entry.folder_path.as_deref() == Some(cand.as_path());
+                            if ui
+                                .selectable_label(selected, cand.display().to_string())
+                                .clicked()
+                            {
+                                *action = Some(FehEntryAction::SetFolder(
+                                    entry.id.clone(),
+                                    Some(cand.clone()),
+                                ));
+                            }
+                        }
+                    });
+                if state.launchable {
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 0.0],
+                            egui::Button::new(format!("Launch ({})", state.status)),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(FehEntryAction::Launch(entry.id.clone()));
+                    }
+                } else {
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new(format!("Launch — {}", state.status)),
+                    );
+                }
+            });
+    }
+
     fn render_feh_instances_body(&mut self, ui: &mut egui::Ui) {
         let feh_available = self.feh_available;
         let candidates = self.folder_candidates();
-
         ui.horizontal(|ui| {
             if ui.button("+ Add").clicked() {
                 self.add_launch_entry();
@@ -1242,7 +1369,6 @@ impl RustFehApp {
                 self.launch_all_entries();
             }
         });
-
         if self.launch_entries.entries.is_empty() {
             ui.small("Add folders to launch in feh.");
             return;
@@ -1250,131 +1376,20 @@ impl RustFehApp {
         if !feh_available {
             ui.small(feh_not_installed_launch_status());
         }
-
-        enum EntryAction {
-            Remove(String),
-            Launch(String),
-            SetFolder(String, Option<PathBuf>),
-            SetLabel(String, Option<String>),
-        }
-        let mut action: Option<EntryAction> = None;
-
+        let mut action = None;
         egui::ScrollArea::vertical()
             .id_salt("feh_instances_list")
             .max_height(320.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                let entries: Vec<FehLaunchEntry> = self.launch_entries.entries.clone();
+                let entries = self.launch_entries.entries.clone();
                 for (idx, entry) in entries.iter().enumerate() {
-            let state = entry_is_launchable(entry, &self.images, feh_available);
-            let display_label = entry.label.clone().unwrap_or_else(|| {
-                entry
-                    .folder_path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "(new)".to_string())
-            });
-
-            egui::Frame::group(ui.style())
-                .inner_margin(6.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(format!("#{}: {display_label}", idx + 1));
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.small_button("×").clicked() {
-                                    action = Some(EntryAction::Remove(entry.id.clone()));
-                                }
-                            },
-                        );
-                    });
-
-                    let mut label_buf = entry.label.clone().unwrap_or_default();
-                    let placeholder = entry
-                        .folder_path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Label".to_string());
-                    ui.horizontal(|ui| {
-                        ui.small("Label:");
-                        if ui
-                            .add(egui::TextEdit::singleline(&mut label_buf).hint_text(placeholder))
-                            .changed()
-                        {
-                            let trimmed = label_buf.trim();
-                            let new_label = if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(trimmed.to_string())
-                            };
-                            if new_label != entry.label {
-                                action =
-                                    Some(EntryAction::SetLabel(entry.id.clone(), new_label));
-                            }
-                        }
-                    });
-
-                    let current = entry
-                        .folder_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "None selected".to_string());
-                    egui::ComboBox::from_id_salt(format!("feh_entry_folder_{}", entry.id))
-                        .selected_text(current)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(entry.folder_path.is_none(), "None selected")
-                                .clicked()
-                            {
-                                action =
-                                    Some(EntryAction::SetFolder(entry.id.clone(), None));
-                            }
-                            for cand in &candidates {
-                                let selected =
-                                    entry.folder_path.as_deref() == Some(cand.as_path());
-                                if ui
-                                    .selectable_label(selected, cand.display().to_string())
-                                    .clicked()
-                                {
-                                    action = Some(EntryAction::SetFolder(
-                                        entry.id.clone(),
-                                        Some(cand.clone()),
-                                    ));
-                                }
-                            }
-                        });
-
-                    if state.launchable {
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 0.0],
-                                egui::Button::new(format!("Launch ({})", state.status)),
-                            )
-                            .clicked()
-                        {
-                            action = Some(EntryAction::Launch(entry.id.clone()));
-                        }
-                    } else {
-                        ui.add_enabled(
-                            false,
-                            egui::Button::new(format!("Launch — {}", state.status)),
-                        );
-                    }
-                });
-        }
-            });
-
-        if let Some(action) = action {
-            match action {
-                EntryAction::Remove(id) => self.remove_launch_entry(&id),
-                EntryAction::Launch(id) => self.launch_entry(&id),
-                EntryAction::SetFolder(id, folder) => self.update_entry_folder(&id, folder),
-                EntryAction::SetLabel(id, label) => {
-                    self.update_entry_label(&id, label.as_deref().unwrap_or(""));
+                    let state = entry_is_launchable(entry, &self.images, feh_available);
+                    Self::render_feh_entry_card(ui, idx, entry, &state, &candidates, &mut action);
                 }
-            }
+            });
+        if let Some(action) = action {
+            self.apply_feh_entry_action(action);
         }
     }
 
@@ -1455,48 +1470,50 @@ impl RustFehApp {
         }
     }
 
+    fn tools_build_resize_op(&self) -> Result<ImageOperation, String> {
+        let (width, height, percent) = if self.tools_panel.use_percent {
+            let p: f32 = self
+                .tools_panel
+                .resize_percent
+                .parse()
+                .map_err(|_| "invalid percent".to_string())?;
+            (None, None, Some(p))
+        } else {
+            let w = if self.tools_panel.resize_width.is_empty() {
+                None
+            } else {
+                Some(
+                    self.tools_panel
+                        .resize_width
+                        .parse()
+                        .map_err(|_| "invalid width".to_string())?,
+                )
+            };
+            let h = if self.tools_panel.resize_height.is_empty() {
+                None
+            } else {
+                Some(
+                    self.tools_panel
+                        .resize_height
+                        .parse()
+                        .map_err(|_| "invalid height".to_string())?,
+                )
+            };
+            (w, h, None)
+        };
+        Ok(ImageOperation::Resize {
+            width,
+            height,
+            percent,
+            fit: Some(self.tools_panel.fit),
+            filter: Some(self.tools_panel.filter),
+            quality: Some(self.tools_panel.quality),
+        })
+    }
+
     fn tools_build_single_op(&self) -> Result<ImageOperation, String> {
         match self.tools_panel.single_op {
-            ToolsSingleOp::Resize => {
-                let (width, height, percent) = if self.tools_panel.use_percent {
-                    let p: f32 = self
-                        .tools_panel
-                        .resize_percent
-                        .parse()
-                        .map_err(|_| "invalid percent".to_string())?;
-                    (None, None, Some(p))
-                } else {
-                    let w = if self.tools_panel.resize_width.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            self.tools_panel
-                                .resize_width
-                                .parse()
-                                .map_err(|_| "invalid width".to_string())?,
-                        )
-                    };
-                    let h = if self.tools_panel.resize_height.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            self.tools_panel
-                                .resize_height
-                                .parse()
-                                .map_err(|_| "invalid height".to_string())?,
-                        )
-                    };
-                    (w, h, None)
-                };
-                Ok(ImageOperation::Resize {
-                    width,
-                    height,
-                    percent,
-                    fit: Some(self.tools_panel.fit),
-                    filter: Some(self.tools_panel.filter),
-                    quality: Some(self.tools_panel.quality),
-                })
-            }
+            ToolsSingleOp::Resize => self.tools_build_resize_op(),
             ToolsSingleOp::Crop => Ok(ImageOperation::Crop {
                 geometry: self.tools_panel.crop_geometry.clone(),
             }),
@@ -1678,7 +1695,7 @@ impl RustFehApp {
             return;
         }
         self.cleanup_prepare_fast_temp();
-        let temp = std::env::temp_dir().join(format!("rust-feh-fast-{}", std::process::id()));
+        let temp = prepare_fast_work_dir();
         let svc = self.image_tools.clone();
         let temp_clone = temp.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1740,114 +1757,148 @@ impl RustFehApp {
         );
     }
 
+    fn poll_batch_job_rx(
+        &mut self,
+        job: &mut ActiveToolsJob,
+        rx: &mpsc::Receiver<JobMsg<ProcessedResult>>,
+    ) -> (bool, bool) {
+        let mut done = false;
+        let mut cancelled = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                JobMsg::Progress(p) => {
+                    job.current = p.current;
+                    job.total = p.total;
+                    job.message = p.message.clone();
+                    if p.message.starts_with("skip:") {
+                        job.batch_fail += 1;
+                    }
+                    self.status = format!(
+                        "Batch {}/{}: {}",
+                        p.current + 1,
+                        p.total,
+                        p.message
+                    );
+                }
+                JobMsg::Item(res) => {
+                    job.batch_ok += 1;
+                    self.tools_on_processed(res);
+                }
+                JobMsg::Cancelled => {
+                    cancelled = true;
+                    done = true;
+                }
+                JobMsg::Done => {
+                    let summary = format!(
+                        "Batch done: {} ok, {} failed of {}",
+                        job.batch_ok, job.batch_fail, job.total
+                    );
+                    self.tools_panel.batch_summary = Some(summary.clone());
+                    self.status = summary;
+                    done = true;
+                }
+            }
+        }
+        (done, cancelled)
+    }
+
+    fn poll_precache_job_rx(
+        &mut self,
+        job: &mut ActiveToolsJob,
+        rx: &mpsc::Receiver<JobMsg<bool>>,
+    ) -> (bool, bool) {
+        let mut done = false;
+        let mut cancelled = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                JobMsg::Progress(p) => {
+                    job.current = p.current;
+                    job.total = p.total;
+                    job.message = p.message.clone();
+                    self.status = format!(
+                        "Pre-cache {}/{}: {}",
+                        p.current + 1,
+                        p.total,
+                        p.message
+                    );
+                }
+                JobMsg::Item(true) => job.precache_ok += 1,
+                JobMsg::Item(false) => {}
+                JobMsg::Cancelled => {
+                    cancelled = true;
+                    done = true;
+                }
+                JobMsg::Done => {
+                    self.log(format!(
+                        "Pre-cache put attempted for {}/{} images",
+                        job.precache_ok, job.total
+                    ));
+                    self.status = format!(
+                        "Pre-cache done: {}/{} cached",
+                        job.precache_ok, job.total
+                    );
+                    done = true;
+                }
+            }
+        }
+        (done, cancelled)
+    }
+
+    fn poll_prepare_fast_job_rx(
+        &mut self,
+        job: &mut ActiveToolsJob,
+        rx: &mpsc::Receiver<JobMsg<PathBuf>>,
+    ) -> (bool, bool) {
+        let mut done = false;
+        let mut cancelled = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                JobMsg::Progress(p) => {
+                    job.current = p.current;
+                    job.total = p.total;
+                    job.message = p.message.clone();
+                    self.status = format!(
+                        "Prepare Fast {}/{}: {}",
+                        p.current + 1,
+                        p.total,
+                        p.message
+                    );
+                }
+                JobMsg::Item(path) => job.prepare_paths.push(path),
+                JobMsg::Cancelled => {
+                    cancelled = true;
+                    done = true;
+                }
+                JobMsg::Done => {
+                    let paths = job.prepare_paths.clone();
+                    let temp = job.prepare_temp.clone();
+                    self.tools_finish_prepare_fast(paths, temp);
+                    done = true;
+                }
+            }
+        }
+        (done, cancelled)
+    }
+
     fn poll_tools_job(&mut self, ctx: &egui::Context) {
         let Some(mut job) = self.tools_job.take() else {
             return;
         };
-        let mut done = false;
-        let mut cancelled = false;
-        let mut repaint = false;
-
-        if let Some(rx) = &job.rx_batch {
-            while let Ok(msg) = rx.try_recv() {
-                repaint = true;
-                match msg {
-                    JobMsg::Progress(p) => {
-                        job.current = p.current;
-                        job.total = p.total;
-                        job.message = p.message.clone();
-                        if p.message.starts_with("skip:") {
-                            job.batch_fail += 1;
-                        }
-                        self.status = format!(
-                            "Batch {}/{}: {}",
-                            p.current + 1,
-                            p.total,
-                            p.message
-                        );
-                    }
-                    JobMsg::Item(res) => {
-                        job.batch_ok += 1;
-                        self.tools_on_processed(res);
-                    }
-                    JobMsg::Cancelled => {
-                        cancelled = true;
-                        done = true;
-                    }
-                    JobMsg::Done => {
-                        let summary = format!(
-                            "Batch done: {} ok, {} failed of {}",
-                            job.batch_ok, job.batch_fail, job.total
-                        );
-                        self.tools_panel.batch_summary = Some(summary.clone());
-                        self.status = summary;
-                        done = true;
-                    }
-                }
-            }
-        } else if let Some(rx) = &job.rx_bool {
-            while let Ok(msg) = rx.try_recv() {
-                repaint = true;
-                match msg {
-                    JobMsg::Progress(p) => {
-                        job.current = p.current;
-                        job.total = p.total;
-                        job.message = p.message.clone();
-                        self.status = format!(
-                            "Pre-cache {}/{}: {}",
-                            p.current + 1,
-                            p.total,
-                            p.message
-                        );
-                    }
-                    JobMsg::Item(true) => job.precache_ok += 1,
-                    JobMsg::Item(false) => {}
-                    JobMsg::Cancelled => {
-                        cancelled = true;
-                        done = true;
-                    }
-                    JobMsg::Done => {
-                        self.log(format!(
-                            "Pre-cache put attempted for {}/{} images",
-                            job.precache_ok, job.total
-                        ));
-                        self.status = format!(
-                            "Pre-cache done: {}/{} cached",
-                            job.precache_ok, job.total
-                        );
-                        done = true;
-                    }
-                }
-            }
-        } else if let Some(rx) = &job.rx_paths {
-            while let Ok(msg) = rx.try_recv() {
-                repaint = true;
-                match msg {
-                    JobMsg::Progress(p) => {
-                        job.current = p.current;
-                        job.total = p.total;
-                        job.message = p.message.clone();
-                        self.status = format!(
-                            "Prepare Fast {}/{}: {}",
-                            p.current + 1,
-                            p.total,
-                            p.message
-                        );
-                    }
-                    JobMsg::Item(path) => job.prepare_paths.push(path),
-                    JobMsg::Cancelled => {
-                        cancelled = true;
-                        done = true;
-                    }
-                    JobMsg::Done => {
-                        let paths = job.prepare_paths.clone();
-                        let temp = job.prepare_temp.clone();
-                        self.tools_finish_prepare_fast(paths, temp);
-                        done = true;
-                    }
-                }
-            }
-        }
+        let (done, cancelled) = if let Some(rx) = job.rx_batch.take() {
+            let outcome = self.poll_batch_job_rx(&mut job, &rx);
+            job.rx_batch = Some(rx);
+            outcome
+        } else if let Some(rx) = job.rx_bool.take() {
+            let outcome = self.poll_precache_job_rx(&mut job, &rx);
+            job.rx_bool = Some(rx);
+            outcome
+        } else if let Some(rx) = job.rx_paths.take() {
+            let outcome = self.poll_prepare_fast_job_rx(&mut job, &rx);
+            job.rx_paths = Some(rx);
+            outcome
+        } else {
+            (true, false)
+        };
 
         if cancelled {
             self.log("Image tools job cancelled by user");
@@ -1856,9 +1907,7 @@ impl RustFehApp {
             }
         } else if !done {
             self.tools_job = Some(job);
-            if repaint {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
@@ -1880,10 +1929,6 @@ impl RustFehApp {
     }
 
     fn open_feh_on_prepared_fast(&mut self) {
-        if !self.feh_available {
-            self.status = feh_missing_status();
-            return;
-        }
         let Some(set) = self.prepared_fast.clone() else {
             self.status = "Run Prepare Fast first".into();
             return;
@@ -1902,37 +1947,14 @@ impl RustFehApp {
                 return;
             }
         }
+        let count = set.materialized_paths.len();
         let start = set.materialized_paths[0].as_path();
-        let mut cmd = Command::new("feh");
-        cmd.arg("--geometry")
-            .arg(FEH_VIEWER_GEOMETRY)
-            .arg("--scale-down")
-            .arg("--zoom")
-            .arg(FEH_VIEWER_ZOOM)
-            .arg("--filelist")
-            .arg(&list_path)
-            .arg("--start-at")
-            .arg(start);
-        self.log(format!(
-            "Spawning feh on {} optimized images",
-            set.materialized_paths.len()
-        ));
-        match cmd.spawn() {
-            Ok(child) => {
-                self.status = format!(
-                    "Launched feh on {} optimized images (pid {:?})",
-                    set.materialized_paths.len(),
-                    child.id()
-                );
-            }
-            Err(e) => {
-                if feh_spawn_unavailable(&e) {
-                    self.mark_feh_unavailable();
-                } else {
-                    self.status = format!("Failed to launch feh: {e}");
-                }
-            }
-        }
+        self.spawn_feh_viewer(
+            &list_path,
+            start,
+            format!("Spawning feh on {count} optimized images"),
+            format!("Launched feh on {count} optimized images"),
+        );
     }
 
     fn tools_refresh_rename_preview(&mut self) {
@@ -1970,288 +1992,262 @@ impl RustFehApp {
         self.tools_panel.rename_confirm_open = false;
     }
 
-    fn render_inspector_image_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Image Tools").strong());
+    fn render_tools_resize_controls(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(&mut self.tools_panel.use_percent, "Use percent");
+        if self.tools_panel.use_percent {
+            ui.text_edit_singleline(&mut self.tools_panel.resize_percent);
+        } else {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Single, "Single");
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Batch, "Batch");
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Rename, "Rename");
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Cache, "Cache");
+                ui.label("W");
+                ui.text_edit_singleline(&mut self.tools_panel.resize_width);
+                ui.label("H");
+                ui.text_edit_singleline(&mut self.tools_panel.resize_height);
             });
-            ui.separator();
+        }
+        egui::ComboBox::from_id_salt("fit_mode")
+            .selected_text(format!("{:?}", self.tools_panel.fit))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.tools_panel.fit, FitMode::Contain, "Contain");
+                ui.selectable_value(&mut self.tools_panel.fit, FitMode::Cover, "Cover");
+                ui.selectable_value(&mut self.tools_panel.fit, FitMode::Stretch, "Stretch");
+            });
+        egui::ComboBox::from_id_salt("resize_filter")
+            .selected_text(filter_label(self.tools_panel.filter))
+            .show_ui(ui, |ui| {
+                for (filter, label) in [
+                    (Filter::Lanczos3, "Lanczos"),
+                    (Filter::Nearest, "Nearest"),
+                    (Filter::Triangle, "Triangle"),
+                    (Filter::CatmullRom, "CatmullRom"),
+                    (Filter::Gaussian, "Gaussian"),
+                ] {
+                    ui.selectable_value(&mut self.tools_panel.filter, filter, label);
+                }
+            });
+    }
 
-            match self.tools_panel.section {
-                ToolsSection::Single | ToolsSection::Batch => {
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(
-                            &mut self.tools_panel.single_op,
-                            ToolsSingleOp::Resize,
-                            "Resize",
-                        );
-                        ui.selectable_value(
-                            &mut self.tools_panel.single_op,
-                            ToolsSingleOp::Crop,
-                            "Crop",
-                        );
-                        ui.selectable_value(
-                            &mut self.tools_panel.single_op,
-                            ToolsSingleOp::Convert,
-                            "Convert",
-                        );
-                    });
-                    if self.tools_panel.single_op == ToolsSingleOp::Resize {
-                        ui.checkbox(&mut self.tools_panel.use_percent, "Use percent");
-                        if self.tools_panel.use_percent {
-                            ui.text_edit_singleline(&mut self.tools_panel.resize_percent);
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.label("W");
-                                ui.text_edit_singleline(&mut self.tools_panel.resize_width);
-                                ui.label("H");
-                                ui.text_edit_singleline(&mut self.tools_panel.resize_height);
-                            });
-                        }
-                        egui::ComboBox::from_id_salt("fit_mode")
-                            .selected_text(format!("{:?}", self.tools_panel.fit))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.tools_panel.fit,
-                                    FitMode::Contain,
-                                    "Contain",
-                                );
-                                ui.selectable_value(
-                                    &mut self.tools_panel.fit,
-                                    FitMode::Cover,
-                                    "Cover",
-                                );
-                                ui.selectable_value(
-                                    &mut self.tools_panel.fit,
-                                    FitMode::Stretch,
-                                    "Stretch",
-                                );
-                            });
-                        egui::ComboBox::from_id_salt("resize_filter")
-                            .selected_text(filter_label(self.tools_panel.filter))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.tools_panel.filter,
-                                    Filter::Lanczos3,
-                                    "Lanczos",
-                                );
-                                ui.selectable_value(
-                                    &mut self.tools_panel.filter,
-                                    Filter::Nearest,
-                                    "Nearest",
-                                );
-                                ui.selectable_value(
-                                    &mut self.tools_panel.filter,
-                                    Filter::Triangle,
-                                    "Triangle",
-                                );
-                                ui.selectable_value(
-                                    &mut self.tools_panel.filter,
-                                    Filter::CatmullRom,
-                                    "CatmullRom",
-                                );
-                                ui.selectable_value(
-                                    &mut self.tools_panel.filter,
-                                    Filter::Gaussian,
-                                    "Gaussian",
-                                );
-                            });
-                    } else if self.tools_panel.single_op == ToolsSingleOp::Crop {
-                        ui.label("Geometry WxH+X+Y:");
-                        if ui
-                            .text_edit_singleline(&mut self.tools_panel.crop_geometry)
-                            .changed()
-                        {
-                            self.tools_panel.last_crop_key.clear();
-                        }
-                        if let Some(sel) = &self.selected {
-                            let key = format!("{}:{}", sel.display(), self.tools_panel.crop_geometry);
-                            if self.tools_panel.last_crop_key != key {
-                                if let Ok(px) =
-                                    crop_preview_pixels(sel, &self.tools_panel.crop_geometry, 256)
-                                {
-                                    let img = egui::ColorImage::from_rgba_unmultiplied(
-                                        [px.width as usize, px.height as usize],
-                                        &px.rgba,
-                                    );
-                                    self.tools_panel.crop_texture = Some(ctx.load_texture(
-                                        "crop_preview",
-                                        img,
-                                        egui::TextureOptions::LINEAR,
-                                    ));
-                                    self.tools_panel.last_crop_key = key;
-                                }
-                            }
-                            if let Some(tex) = &self.tools_panel.crop_texture {
-                                ui.image(tex);
-                            }
-                        }
-                    } else {
-                        ui.text_edit_singleline(&mut self.tools_panel.convert_format);
-                    }
-                    ui.add(egui::Slider::new(&mut self.tools_panel.quality, 1..=100).text("Quality"));
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(
-                            &mut self.tools_panel.policy_ui,
-                            ToolsPolicyUi::Subfolder,
-                            "Subfolder",
-                        );
-                        ui.selectable_value(
-                            &mut self.tools_panel.policy_ui,
-                            ToolsPolicyUi::Suffixed,
-                            "Suffix",
-                        );
-                        ui.selectable_value(
-                            &mut self.tools_panel.policy_ui,
-                            ToolsPolicyUi::InPlace,
-                            "In-place",
-                        );
-                    });
-                    if self.tools_panel.policy_ui == ToolsPolicyUi::Subfolder {
-                        ui.text_edit_singleline(&mut self.tools_panel.subfolder_name);
-                    } else if self.tools_panel.policy_ui == ToolsPolicyUi::Suffixed {
-                        ui.text_edit_singleline(&mut self.tools_panel.suffix);
-                    }
-                }
-                ToolsSection::Rename => {
-                    if ui
-                        .text_edit_singleline(&mut self.tools_panel.rename_pattern)
-                        .changed()
-                    {
-                        self.tools_refresh_rename_preview();
-                    }
-                    if let Some(e) = &self.tools_panel.rename_error {
-                        ui.colored_label(egui::Color32::RED, e);
-                    }
-                    egui::ScrollArea::vertical()
-                        .max_height(120.0)
-                        .show(ui, |ui| {
-                            for (old, new) in &self.tools_panel.rename_preview {
-                                ui.label(format!(
-                                    "{} → {}",
-                                    old.file_name().unwrap_or_default().to_string_lossy(),
-                                    new
-                                ));
-                            }
-                        });
-                }
-                ToolsSection::Cache => {
-                    let caps = &self.tool_caps;
-                    ui.checkbox(&mut self.cache_config.enabled, "Enable cache");
-                    ui.horizontal(|ui| {
-                        ui.label("Root:");
-                        let root_label = self
-                            .cache_config
-                            .root
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "(default)".into());
-                        ui.label(egui::RichText::new(root_label).small());
-                        if ui.button("Pick root…").clicked() {
-                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                                self.cache_config.root = Some(dir);
-                            }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Passkey:");
-                        let pk_label = self
-                            .cache_config
-                            .passkey_path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "(none)".into());
-                        ui.label(egui::RichText::new(pk_label).small());
-                        if ui.button("Pick passkey…").clicked() {
-                            if let Some(file) = rfd::FileDialog::new().pick_file() {
-                                self.cache_config.passkey_path = Some(file);
-                            }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("TTL:");
-                        ui.text_edit_singleline(&mut self.cache_config.default_ttl);
-                    });
-                    if caps.magick_cache_available {
-                        ui.small(format!(
-                            "magick-cache: {}",
-                            if caps.magick_cache_ready {
-                                "ready"
-                            } else {
-                                "install/setup needed"
-                            }
-                        ));
-                    } else {
-                        ui.small("magick-cache not on PATH — see README");
-                    }
-                    if ui.button("Apply cache settings").clicked() {
-                        self.image_tools
-                            .update_cache(self.cache_config.clone());
-                        self.log("Cache settings applied (in-memory session)");
-                    }
-                    let paths = self.tools_batch_paths();
-                    let job_busy = self.tools_job_active();
-                    if ui
-                        .add_enabled(!paths.is_empty() && !job_busy, egui::Button::new("Pre-cache folder"))
-                        .clicked()
-                    {
-                        self.tools_start_precache_job();
-                    }
-                    if ui
-                        .add_enabled(!paths.is_empty() && !job_busy, egui::Button::new("Prepare Fast feh"))
-                        .clicked()
-                    {
-                        self.tools_start_prepare_fast_job();
-                    }
-                    if let Some(set) = &self.prepared_fast {
-                        ui.small(format!(
-                            "{} optimized files ready",
-                            set.materialized_paths.len()
-                        ));
-                        if ui
-                            .add_enabled(self.feh_available, egui::Button::new("Launch feh on optimized"))
-                            .clicked()
-                        {
-                            self.open_feh_on_prepared_fast();
-                        }
-                    }
-                }
-            }
-
-            if let Some(job) = &self.tools_job {
-                ui.separator();
-                ui.label(format!(
-                    "Job: {}/{} — {}",
-                    job.current + 1,
-                    job.total.max(1),
-                    job.message
+    fn render_tools_crop_preview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.label("Geometry WxH+X+Y:");
+        if ui
+            .text_edit_singleline(&mut self.tools_panel.crop_geometry)
+            .changed()
+        {
+            self.tools_panel.last_crop_key.clear();
+        }
+        let Some(sel) = &self.selected else {
+            return;
+        };
+        let key = format!("{}:{}", sel.display(), self.tools_panel.crop_geometry);
+        if self.tools_panel.last_crop_key != key {
+            if let Ok(px) = crop_preview_pixels(sel, &self.tools_panel.crop_geometry, 256) {
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [px.width as usize, px.height as usize],
+                    &px.rgba,
+                );
+                self.tools_panel.crop_texture = Some(ctx.load_texture(
+                    "crop_preview",
+                    img,
+                    egui::TextureOptions::LINEAR,
                 ));
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel job").clicked() {
-                        self.cancel_tools_job();
-                    }
-                });
+                self.tools_panel.last_crop_key = key;
             }
-            if let Some(summary) = &self.tools_panel.batch_summary {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, summary);
-                if ui.button("Dismiss summary").clicked() {
-                    self.tools_panel.batch_summary = None;
+        }
+        if let Some(tex) = &self.tools_panel.crop_texture {
+            ui.image(tex);
+        }
+    }
+
+    fn render_tools_output_policy(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.tools_panel.quality, 1..=100).text("Quality"));
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.tools_panel.policy_ui,
+                ToolsPolicyUi::Subfolder,
+                "Subfolder",
+            );
+            ui.selectable_value(
+                &mut self.tools_panel.policy_ui,
+                ToolsPolicyUi::Suffixed,
+                "Suffix",
+            );
+            ui.selectable_value(
+                &mut self.tools_panel.policy_ui,
+                ToolsPolicyUi::InPlace,
+                "In-place",
+            );
+        });
+        match self.tools_panel.policy_ui {
+            ToolsPolicyUi::Subfolder => {
+                ui.text_edit_singleline(&mut self.tools_panel.subfolder_name);
+            }
+            ToolsPolicyUi::Suffixed => {
+                ui.text_edit_singleline(&mut self.tools_panel.suffix);
+            }
+            ToolsPolicyUi::InPlace => {}
+        }
+    }
+
+    fn render_tools_single_batch_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.tools_panel.single_op,
+                ToolsSingleOp::Resize,
+                "Resize",
+            );
+            ui.selectable_value(&mut self.tools_panel.single_op, ToolsSingleOp::Crop, "Crop");
+            ui.selectable_value(
+                &mut self.tools_panel.single_op,
+                ToolsSingleOp::Convert,
+                "Convert",
+            );
+        });
+        match self.tools_panel.single_op {
+            ToolsSingleOp::Resize => self.render_tools_resize_controls(ui),
+            ToolsSingleOp::Crop => self.render_tools_crop_preview(ui, ctx),
+            ToolsSingleOp::Convert => {
+                ui.text_edit_singleline(&mut self.tools_panel.convert_format);
+            }
+        }
+        self.render_tools_output_policy(ui);
+    }
+
+    fn render_tools_rename_section(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .text_edit_singleline(&mut self.tools_panel.rename_pattern)
+            .changed()
+        {
+            self.tools_refresh_rename_preview();
+        }
+        if let Some(e) = &self.tools_panel.rename_error {
+            ui.colored_label(egui::Color32::RED, e);
+        }
+        egui::ScrollArea::vertical()
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for (old, new) in &self.tools_panel.rename_preview {
+                    ui.label(format!(
+                        "{} → {}",
+                        old.file_name().unwrap_or_default().to_string_lossy(),
+                        new
+                    ));
+                }
+            });
+    }
+
+    fn render_tools_cache_section(&mut self, ui: &mut egui::Ui) {
+        let caps = &self.tool_caps;
+        ui.checkbox(&mut self.cache_config.enabled, "Enable cache");
+        ui.horizontal(|ui| {
+            ui.label("Root:");
+            let root_label = self
+                .cache_config
+                .root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(default)".into());
+            ui.label(egui::RichText::new(root_label).small());
+            if ui.button("Pick root…").clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    self.cache_config.root = Some(dir);
                 }
             }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Passkey:");
+            let pk_label = self
+                .cache_config
+                .passkey_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(none)".into());
+            ui.label(egui::RichText::new(pk_label).small());
+            if ui.button("Pick passkey…").clicked() {
+                if let Some(file) = rfd::FileDialog::new().pick_file() {
+                    self.cache_config.passkey_path = Some(file);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("TTL:");
+            ui.text_edit_singleline(&mut self.cache_config.default_ttl);
+        });
+        if caps.magick_cache_available {
+            let status = if caps.magick_cache_ready {
+                "ready"
+            } else {
+                "install/setup needed"
+            };
+            ui.small(format!("magick-cache: {status}"));
+        } else {
+            ui.small("magick-cache not on PATH — see README");
+        }
+        if ui.button("Apply cache settings").clicked() {
+            self.image_tools.update_cache(self.cache_config.clone());
+            self.log("Cache settings applied (in-memory session)");
+        }
+        let paths = self.tools_batch_paths();
+        let job_busy = self.tools_job_active();
+        if ui
+            .add_enabled(!paths.is_empty() && !job_busy, egui::Button::new("Pre-cache folder"))
+            .clicked()
+        {
+            self.tools_start_precache_job();
+        }
+        if ui
+            .add_enabled(!paths.is_empty() && !job_busy, egui::Button::new("Prepare Fast feh"))
+            .clicked()
+        {
+            self.tools_start_prepare_fast_job();
+        }
+        if let Some(set) = &self.prepared_fast {
+            ui.small(format!(
+                "{} optimized files ready",
+                set.materialized_paths.len()
+            ));
+            if ui
+                .add_enabled(self.feh_available, egui::Button::new("Launch feh on optimized"))
+                .clicked()
+            {
+                self.open_feh_on_prepared_fast();
+            }
+        }
+    }
 
+    fn render_tools_job_status(&mut self, ui: &mut egui::Ui) {
+        if let Some(job) = &self.tools_job {
             ui.separator();
-            if self.tools_panel.section == ToolsSection::Single {
-                let enabled = self.selected.is_some();
-                if ui.add_enabled(enabled, egui::Button::new("Apply")).clicked() {
+            ui.label(format!(
+                "Job: {}/{} — {}",
+                job.current + 1,
+                job.total.max(1),
+                job.message
+            ));
+            if ui.button("Cancel job").clicked() {
+                self.cancel_tools_job();
+            }
+        }
+        if let Some(summary) = &self.tools_panel.batch_summary {
+            ui.colored_label(egui::Color32::LIGHT_GREEN, summary);
+            if ui.button("Dismiss summary").clicked() {
+                self.tools_panel.batch_summary = None;
+            }
+        }
+    }
+
+    fn render_tools_action_buttons(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        match self.tools_panel.section {
+            ToolsSection::Single => {
+                if ui
+                    .add_enabled(self.selected.is_some(), egui::Button::new("Apply"))
+                    .clicked()
+                {
                     if let Some(sel) = self.selected.clone() {
                         self.tools_apply_single(&sel);
                     }
                 }
-            } else if self.tools_panel.section == ToolsSection::Batch {
+            }
+            ToolsSection::Batch => {
                 let n = self.tools_batch_paths().len();
                 ui.label(format!("Batch targets: {n} filtered images"));
                 if self.tools_panel.policy_ui == ToolsPolicyUi::InPlace {
@@ -2260,8 +2256,10 @@ impl RustFehApp {
                         "In-place batch creates .bak backups then overwrites originals",
                     );
                 }
-                let can_run = !self.tools_job_active();
-                if ui.add_enabled(can_run, egui::Button::new("Run batch…")).clicked() {
+                if ui
+                    .add_enabled(!self.tools_job_active(), egui::Button::new("Run batch…"))
+                    .clicked()
+                {
                     self.tools_panel.batch_confirm_open = true;
                 }
                 if self.tools_panel.batch_confirm_open {
@@ -2274,7 +2272,8 @@ impl RustFehApp {
                         self.tools_panel.batch_inplace_confirm = 0;
                     }
                 }
-            } else if self.tools_panel.section == ToolsSection::Rename {
+            }
+            ToolsSection::Rename => {
                 if ui.button("Refresh preview").clicked() {
                     self.tools_refresh_rename_preview();
                 }
@@ -2283,13 +2282,34 @@ impl RustFehApp {
                 if ui.add_enabled(ok, egui::Button::new("Apply rename…")).clicked() {
                     self.tools_panel.rename_confirm_open = true;
                 }
-                if self.tools_panel.rename_confirm_open
-                    && ok
-                    && ui.button("Confirm rename").clicked()
+                if self.tools_panel.rename_confirm_open && ok && ui.button("Confirm rename").clicked()
                 {
                     self.tools_apply_rename();
                 }
             }
+            ToolsSection::Cache => {}
+        }
+    }
+
+    fn render_inspector_image_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new("Image Tools").strong());
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Single, "Single");
+                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Batch, "Batch");
+                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Rename, "Rename");
+                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Cache, "Cache");
+            });
+            ui.separator();
+            match self.tools_panel.section {
+                ToolsSection::Single | ToolsSection::Batch => {
+                    self.render_tools_single_batch_section(ui, ctx);
+                }
+                ToolsSection::Rename => self.render_tools_rename_section(ui),
+                ToolsSection::Cache => self.render_tools_cache_section(ui),
+            }
+            self.render_tools_job_status(ui);
+            self.render_tools_action_buttons(ui);
         });
     }
 
@@ -2823,6 +2843,47 @@ impl RustFehApp {
         }
     }
 
+    fn render_view_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.checkbox(&mut self.recursive, "Include subfolders").changed() {
+            ui.close_menu();
+            self.rescan_current_folder_if_any();
+        }
+        if ui
+            .checkbox(
+                &mut self.deep_scan_magick,
+                "Detect exotic formats (slow)",
+            )
+            .changed()
+        {
+            ui.close_menu();
+            self.rescan_current_folder_if_any();
+        }
+        ui.menu_button("Window size", |ui| {
+            for preset in [
+                WindowSizePreset::Compact,
+                WindowSizePreset::Default,
+                WindowSizePreset::Large,
+            ] {
+                if ui
+                    .selectable_value(
+                        &mut self.window_size,
+                        preset,
+                        window_preset_label(preset),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+            }
+        });
+        if ui
+            .checkbox(&mut self.window_resizable, "Resizable window")
+            .changed()
+        {
+            ui.close_menu();
+        }
+    }
+
     fn render_top_menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -2836,46 +2897,7 @@ impl RustFehApp {
                         self.rescan_current_folder_if_any();
                     }
                 });
-                ui.menu_button("View", |ui| {
-                    if ui.checkbox(&mut self.recursive, "Include subfolders").changed() {
-                        ui.close_menu();
-                        self.rescan_current_folder_if_any();
-                    }
-                    if ui
-                        .checkbox(
-                            &mut self.deep_scan_magick,
-                            "Detect exotic formats (slow)",
-                        )
-                        .changed()
-                    {
-                        ui.close_menu();
-                        self.rescan_current_folder_if_any();
-                    }
-                    ui.menu_button("Window size", |ui| {
-                        for preset in [
-                            WindowSizePreset::Compact,
-                            WindowSizePreset::Default,
-                            WindowSizePreset::Large,
-                        ] {
-                            if ui
-                                .selectable_value(
-                                    &mut self.window_size,
-                                    preset,
-                                    window_preset_label(preset),
-                                )
-                                .clicked()
-                            {
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    if ui
-                        .checkbox(&mut self.window_resizable, "Resizable window")
-                        .changed()
-                    {
-                        ui.close_menu();
-                    }
-                });
+                ui.menu_button("View", |ui| self.render_view_menu(ui));
             });
         });
     }
@@ -3391,40 +3413,12 @@ impl RustFehApp {
             }
         };
 
-        let mut cmd = Command::new("feh");
-        cmd.arg("--geometry")
-            .arg(FEH_VIEWER_GEOMETRY)
-            .arg("--scale-down")
-            .arg("--zoom")
-            .arg(FEH_VIEWER_ZOOM)
-            .arg("--filelist")
-            .arg(&list_path)
-            .arg("--start-at")
-            .arg(path);
-
-        self.log(format!(
-            "Spawning feh with filelist ({count} images): {:?}",
-            cmd
-        ));
-
-        match cmd.spawn() {
-            Ok(child) => {
-                self.log(format!(
-                    "feh launched (pid {:?}) for {}",
-                    child.id(),
-                    path.display()
-                ));
-                self.status = format!("Launched feh on {}", path.display());
-            }
-            Err(e) => {
-                self.log(format!("Failed to spawn feh: {}", e));
-                if feh_spawn_unavailable(&e) {
-                    self.mark_feh_unavailable();
-                } else {
-                    self.status = format!("Failed to launch feh (is it installed?): {}", e);
-                }
-            }
-        }
+        self.spawn_feh_viewer(
+            &list_path,
+            path,
+            format!("Spawning feh with filelist ({count} images)"),
+            format!("Launched feh on {}", path.display()),
+        );
     }
 
 }

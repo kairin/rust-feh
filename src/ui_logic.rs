@@ -55,9 +55,26 @@ pub fn feh_not_installed_launch_status() -> String {
     FEH_NOT_INSTALLED_LAUNCH_MSG.to_string()
 }
 
-/// Temp file path for feh `--filelist` (overwritten each launch).
+fn runtime_cache_dir() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(".cache").join("rust-feh")
+}
+
+/// Writable path for feh `--filelist` (overwritten each launch).
 pub fn feh_filelist_temp_path() -> PathBuf {
-    std::env::temp_dir().join(format!("rust-feh-filelist-{}.txt", std::process::id()))
+    runtime_cache_dir().join(format!("filelist-{}.txt", std::process::id()))
+}
+
+/// Per-entry feh filelist path so Launch All can write distinct lists concurrently.
+pub fn feh_entry_filelist_path(entry_id: &str) -> PathBuf {
+    runtime_cache_dir().join(format!("filelist-{}-{}.txt", std::process::id(), entry_id))
+}
+
+/// Scratch directory for Prepare Fast materialized JPEGs (session-scoped).
+pub fn prepare_fast_work_dir() -> PathBuf {
+    runtime_cache_dir().join(format!("prepare-fast-{}", std::process::id()))
 }
 
 /// Persistence location for configured multi-feh launch entries.
@@ -220,6 +237,10 @@ pub fn write_feh_filelist_to(
     dest: impl AsRef<Path>,
     paths: impl IntoIterator<Item = impl AsRef<Path>>,
 ) -> std::io::Result<usize> {
+    let dest = dest.as_ref();
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut file = std::fs::File::create(dest)?;
     let mut count = 0usize;
     for path in paths {
