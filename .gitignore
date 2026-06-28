@@ -13,10 +13,13 @@
 *.profdata
 
 # direnv secrets — never commit machine-local env files
+# .envrc is machine-managed (untracked); copy .envrc.example then `direnv allow`.
+.envrc
 .envrc.local
 .env
 .env.*
 !.envrc.local.example
+!.envrc.example
 
 # IDE / editor
 .idea/
