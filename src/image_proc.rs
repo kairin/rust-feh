@@ -164,7 +164,7 @@ impl MagickCacheManager {
         format!("{}{}{}", sanitized, operation, params).hash(&mut hasher);
         let hash = hasher.finish();
         // MagickCache IRI: project/type/resource-path (type must be image|blob|meta)
-        format!("rustfeh/image/{}/{}", operation, format!("{:016x}", hash))
+        format!("rustfeh/image/{}/{:016x}", operation, hash)
     }
 
     pub fn cache_root(&self) -> PathBuf {
@@ -424,7 +424,11 @@ fn run_magick_resize_convert(input: &Path, opts: &ProcessOptions, out: &Path) ->
         cmd.arg("-quality").arg(q.to_string());
     }
     cmd.arg("-strip").arg(out);
-    Ok(cmd.status().map_err(|e| e.to_string())?.success().then_some(()).ok_or_else(|| "magick resize failed".to_string())?)
+    cmd.status()
+        .map_err(|e| e.to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "magick resize failed".to_string())
 }
 
 fn run_magick_crop(input: &Path, geometry: &str, out: &Path) -> Result<(), String> {

@@ -824,9 +824,7 @@ fn expand_one_rename_token(pattern: &str, source: &Path, counter: u32) -> Result
     result = result.replace("{ext}", &ext);
     result = result.replace("{date:YYYYMMDD}", &date);
     result = result.replace("{date:YYYY}", &date[..4.min(date.len())]);
-    Ok(if ext.is_empty() {
-        result
-    } else if result.ends_with(&format!(".{ext}")) {
+    Ok(if ext.is_empty() || result.ends_with(&format!(".{ext}")) {
         result
     } else {
         format!("{result}.{ext}")
@@ -890,7 +888,7 @@ fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
 }
 
 fn is_leap(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 /// Aggregate per-item batch results into a summary (for UI + tests).
