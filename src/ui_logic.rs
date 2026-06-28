@@ -1118,9 +1118,13 @@ mod tests {
                 .iter()
                 .map(|&i| images[i].path.clone())
                 .collect();
-            let _ = std::fs::remove_file(feh_filelist_temp_path());
-            write_feh_filelist(&ordered).unwrap();
-            let body = std::fs::read_to_string(feh_filelist_temp_path()).unwrap();
+            let filelist = std::env::temp_dir().join(format!(
+                "rust-feh-filelist-order-{}-{sort:?}.txt",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&filelist);
+            write_feh_filelist_to(&filelist, &ordered).unwrap();
+            let body = std::fs::read_to_string(&filelist).unwrap();
             let lines: Vec<&str> = body.lines().collect();
             assert_eq!(
                 lines.len(),
@@ -1131,23 +1135,27 @@ mod tests {
             for (line, path) in lines.iter().zip(ordered.iter()) {
                 assert_eq!(*line, path.display().to_string());
             }
-            let _ = std::fs::remove_file(feh_filelist_temp_path());
+            let _ = std::fs::remove_file(&filelist);
         }
     }
 
     #[test]
     fn write_feh_filelist_one_path_per_line() {
         let dir = std::env::temp_dir().join("rust-feh-filelist-test");
-        let _ = std::fs::remove_file(feh_filelist_temp_path());
+        let filelist = std::env::temp_dir().join(format!(
+            "rust-feh-filelist-one-path-per-line-{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&filelist);
         let a = dir.join("a.jpg");
         let b = dir.join("sub/b.jpg");
         let paths = [a.as_path(), b.as_path()];
-        let n = write_feh_filelist(&paths).unwrap();
+        let n = write_feh_filelist_to(&filelist, paths).unwrap();
         assert_eq!(n, 2);
-        let body = std::fs::read_to_string(feh_filelist_temp_path()).unwrap();
+        let body = std::fs::read_to_string(&filelist).unwrap();
         assert!(body.contains(&format!("{}\n", a.display())));
         assert!(body.contains(&format!("{}\n", b.display())));
-        let _ = std::fs::remove_file(feh_filelist_temp_path());
+        let _ = std::fs::remove_file(&filelist);
     }
 
     #[test]
