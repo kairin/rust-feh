@@ -1,19 +1,22 @@
 /target/
 /rust-feh
+/debug/
+/release/
 *.pdb
 
-# direnv secrets — never commit
+# Rust build / profile artifacts
+**/*.rs.bk
+*.rlib
+*.rmeta
+*.d
+*.profraw
+*.profdata
+
+# direnv secrets — never commit machine-local env files
 .envrc.local
 .env
 .env.*
 !.envrc.local.example
-
-# Rust specific (in addition to /target/)
-**/*.rs.bk
-*.rlib
-*.rmeta
-*.profraw
-*.profdata
 
 # IDE / editor
 .idea/
@@ -26,24 +29,3 @@
 *.log
 *.tmp
 *.bak
-
-# Build artifacts
-/rust-feh
-/debug/
-/release/
-# Additional Rust build / profile artifacts
-*.rlib
-*.rmeta
-*.d
-*.profraw
-*.profdata
-
-# Direnv and env (already partially covered)
-.envrc
-.envrc.local
-.env
-.env.*
-
-# Editor
-*.swp
-*~
