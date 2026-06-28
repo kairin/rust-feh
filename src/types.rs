@@ -154,9 +154,7 @@ impl Default for FehLaunchList {
     }
 }
 
-/// New types for image tools feature (013).
-
-/// Policy for where processed/renamed output goes.
+/// Policy for where processed/renamed output goes (image tools feature 013).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputPolicy {
     /// Create new files in a subfolder (e.g. "processed").
