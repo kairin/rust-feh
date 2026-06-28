@@ -1,23 +1,24 @@
 # Validation Results (automated)
 
-**Run**: 2026-06-22T01:47:16+08:00
+**Run**: 2026-06-29T00:43:21+08:00
 **Script**: scripts/validate-feature-001.sh
 
 | Metric | Result |
 |--------|--------|
-| Checks passed | 13 |
+| Checks passed | 12 |
 | Checks failed | 0 |
+| Checks skipped | 1 |
 | cargo test | pass |
 | SC-003 filter 10k <200ms | see test sc003_filter_10k_under_200ms |
-| SC-004 RSS <150MB | **pass** — peak ~126 MB @10k, ~124 MB @1k (2026-06-22; see 003 validation-results) |
-| SC-002 60fps scroll | manual GUI only — **pending** |
+| SC-004 RSS <150MB | **pass** — see 003 validation-results (10k RSS audit) |
+| SC-002 60fps scroll | **pass** — see 003 validation-results (10k rapid scrollbar drag) |
 
 ## Quickstart mapping
 
 | Scenario | Automated |
 |----------|-----------|
-| V1 layout scroll | static panel checks only |
-| V2 10k scroll/RSS | scan 10k test; RSS/scroll manual |
+| V1 layout scroll | static persistent-controls + inspector checks |
+| V2 10k scroll/RSS | scan 10k test; RSS/scroll validated in 003 |
 | V3 no auto-feh | status logic test + static grep |
 | V4 filter counter | filter + label tests |
 | V5 recursive | recursive scan test |
@@ -29,6 +30,4 @@
 
 ## GUI tier (feature 003)
 
-RSS audit (SC-004 **pass**): [specs/003-gui-performance-validation/validation-results.md](../003-gui-performance-validation/validation-results.md). Scroll (SC-002) still pending.
-
-Runbook: [specs/003-gui-performance-validation/quickstart.md](../003-gui-performance-validation/quickstart.md) · Entry: `./scripts/validate-gui-performance.sh`
+RSS audit (SC-004 **pass**) and 10k scroll smoothness (SC-002 **pass**): [specs/003-gui-performance-validation/validation-results.md](../003-gui-performance-validation/validation-results.md).

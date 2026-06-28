@@ -59,20 +59,20 @@
 
 **Goal**: Folder picker, filter, actions, menu bar, and status counter always reachable on large collections.
 
-**Independent Test**: quickstart.md V1 — load 5k+ images, scroll to bottom, controls and bottom-bar counter remain visible.
+**Independent Test**: quickstart.md V1 — load 5k+ images, scroll to bottom, controls and inspector/session-status counter remain visible.
 
 ### Verify US1
 
 - [x] T015 [US1] Verify `TopBottomPanel::top("controls")` in `src/main.rs` has Choose folder + menu bar always visible per FR-001
 - [x] T016 [US1] Verify loaded-folder controls in top panel: path, filter, recursive, rescan per FR-001
 - [x] T017 [US1] Verify action buttons (Open in feh, Set as wallpaper, Quick resize) in top panel when folder loaded per FR-002
-- [x] T018 [US1] Verify bottom `TopBottomPanel::bottom("status")` shows status + "Showing X / Y images" per FR-003/FR-006/SC-006 — counter NOT in CentralPanel
+- [x] T018 [US1] Verify right `SidePanel::right("inspector")` session-status UI shows status + "Showing X / Y images" per FR-003/FR-006/SC-006 — counter NOT in CentralPanel
 - [x] T019 [US1] Verify empty-state: filter/actions hidden or disabled before folder load per FR-001 acceptance scenario 1
 - [x] T020 [US1] Verify menu bar actions functional per FR-011: File→Choose folder, File→Rescan, View→Include subfolders, Tools→Open in feh (quickstart V7)
 
 ### Implement US1 gaps
 
-- [x] T021 [US1] Move "Showing X / Y images" counter from CentralPanel to bottom status bar in `src/main.rs` per FR-006
+- [x] T021 [US1] Move "Showing X / Y images" counter from CentralPanel to persistent inspector/session-status UI in `src/main.rs` per FR-006
 - [x] T022 [US1] Implement File→"Choose folder..." to open `rfd::FileDialog` and reuse folder-load logic in `src/main.rs` per FR-011
 - [x] T023 [US1] Implement File→"Rescan" to call `scan_directory` on `current_dir` in `src/main.rs` per FR-011
 - [x] T024 [US1] Implement View→"Include subfolders" checkbox to toggle `recursive` and trigger rescan in `src/main.rs` per FR-011
@@ -104,15 +104,15 @@
 ### Implement US2 gaps
 
 - [x] T033 [US2] Reset ScrollArea offset to 0.0 when `search` changes in `src/main.rs` per FR-005
-- [x] T034 [US2] Show "Scanning…" in bottom status bar while `scanning == true` in `src/main.rs` per FR-010
+- [x] T034 [US2] Show "Scanning…" in the persistent inspector/session-status UI while `scanning == true` in `src/main.rs` per FR-010
 - [x] T035 [US2] Clear image list immediately on new folder pick before scan starts in `src/main.rs` per FR-013
 
 ### Validate US2
 
-- [ ] T036 [US2] Run quickstart.md V2: 10k scroll smooth, RSS under 150MB (`ps -o rss= -p $(pgrep rust-feh)`) per SC-004
-- [ ] T037 [US2] Run quickstart.md V4: filter counter accuracy, 0-match case, empty dir per FR-005/FR-006
-- [ ] T038 [US2] Run quickstart.md V5: recursive toggle rescans correctly per FR-010
-- [ ] T039 [US2] Measure filter response from last keystroke — MUST be under 200ms per SC-003
+- [x] T036 [US2] Run quickstart.md V2: 10k scroll smooth, RSS under 150MB — **pass 2026-06-28**: 10k rapid scrollbar drag smooth (user-confirmed); RSS peak 142.8 MB < 150 MB (see specs/003-gui-performance-validation/validation-results.md)
+- [x] T037 [US2] Run quickstart.md V4: filter counter accuracy, 0-match case, empty dir per FR-005/FR-006 — **pass**: covered by tests `v4_counter_formats`, `filter_zero_match`, `filter_empty_returns_all`, `showing_count_format`
+- [ ] T038 [US2] Run quickstart.md V5: recursive toggle rescans correctly per FR-010 (auto proxy: `v5_recursive_scan_includes_subdirs`; manual GUI toggle still unrun)
+- [x] T039 [US2] Measure filter response from last keystroke — MUST be under 200ms per SC-003 — **pass**: covered by test `sc003_filter_10k_under_200ms`
 - [x] T040 [US2] Fix any remaining US2 gaps from T004 audit in `src/main.rs` (FR-004, FR-005, FR-010, FR-013)
 
 **Checkpoint**: US2 independently verifiable.
@@ -157,7 +157,7 @@
 - [x] T053 [P] Verify debug log collapsible, collapsed by default, empty state "(no debug messages yet)" per FR-009 in `src/main.rs`
 - [x] T054 [P] Verify Quick resize error shows "Process error: …" in status per FR-014 in `src/main.rs`
 - [ ] T055 [P] Verify scanner skip warnings appear in debug log per FR-015 (permission-denied subdir test)
-- [ ] T056 [P] Remove or implement dead code: `Selection` and `SortMode` in `src/types.rs`
+- [x] T056 [P] Remove or implement dead code: `Selection` and `SortMode` in `src/types.rs` — **resolved 2026-06-28**: `Selection` type removed (no longer in `src/types.rs`); `SortMode` is fully implemented and used in `src/ui_logic.rs` (`sort_mode_label`, `sort_key`, `sort` API) with tests `sort_by_name_orders_filenames`/`sort_by_folder_groups_directories`
 - [x] T057 [P] Remove commented tokio/flume lines from `src/main.rs:50` if not planned this phase
 - [ ] T058 Run quickstart.md V6: debug log functional, expandable, clearable
 - [x] T059 [P] Update `README.md` with persistent layout, virtualized list, selection model, feh degradation

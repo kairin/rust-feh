@@ -389,7 +389,10 @@ fn write_image(
         "jpg" | "jpeg" => {
             let q = quality.unwrap_or(85);
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, q);
-            img.write_with_encoder(encoder).map_err(|e| e.to_string())?;
+            // JPEG has no alpha channel: drop it (and any grayscale-alpha) by
+            // flattening to RGB8 before encoding, else RGBA sources fail to encode.
+            let rgb = DynamicImage::ImageRgb8(img.to_rgb8());
+            rgb.write_with_encoder(encoder).map_err(|e| e.to_string())?;
         }
         "webp" => {
             img.write_to(&mut writer, ImageFormat::WebP)
@@ -566,8 +569,9 @@ impl ImageToolsService {
             .to_string_lossy()
             .replace(['/', '\\'], "_");
         let dest = temp_dir.join(format!("{stem}_fast.jpg"));
+        let mut produced = false;
         if has_external_magick() {
-            let status = std::process::Command::new("magick")
+            if let Ok(status) = std::process::Command::new("magick")
                 .arg("convert")
                 .arg(source)
                 .arg("-auto-orient")
@@ -576,11 +580,13 @@ impl ImageToolsService {
                 .arg("92")
                 .arg(&dest)
                 .status()
-                .map_err(|e| e.to_string())?;
-            if !status.success() {
-                return Err("magick prepare-fast failed".into());
+            {
+                produced = status.success();
             }
-        } else {
+        }
+        if !produced {
+            // Fallback to the pure-Rust encoder when magick is absent or fails
+            // (e.g. only legacy `convert` on PATH, or spawn error).
             let opts = ProcessOptions {
                 target_format: Some("jpg".into()),
                 quality: Some(92),

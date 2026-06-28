@@ -29,11 +29,11 @@
 
 - [x] T011 [US1] Build release binary: `./build-and-place.sh` or `cargo build --release` in project root
 - [x] T012 [US1] Generate fixture: `FIXTURE=$(./scripts/generate-perf-fixture.sh 10000)` and record path for validation-results.md
-- [ ] T013 [US1] Launch `./rust-feh`, load `$FIXTURE`, wait for scan complete — confirm counter shows 10000/10000 in `specs/003-gui-performance-validation/quickstart.md` Step 3–4
-- [ ] T014 [US1] Execute V2 scroll protocol (5s rapid scrollbar drag) per `quickstart.md` Step 4 — record pass/fail/inconclusive in `specs/003-gui-performance-validation/validation-results.md`
-- [ ] T015 [US1] Sample RSS 3× with `./scripts/sample-rss.sh` during idle/scroll per `quickstart.md` Step 5 — record peak MB and pass/fail (<150) in `validation-results.md`
-- [ ] T016 [US1] Fill all mandatory ValidationRun fields in `specs/003-gui-performance-validation/validation-results.md` per `contracts/validation-run.md` (tester, environment, run_id, date)
-- [ ] T017 [US1] Update `specs/001-persistent-ui-virtual-browsing/gap-audit.md` SC-002 and SC-004 `validated` columns to pass/fail/inconclusive with date and link to 003 `validation-results.md`
+- [x] T013 [US1] Launch `./rust-feh`, load `$FIXTURE`, wait for scan complete — confirmed counter shows 10000/10000 (2026-06-28, fixture `/tmp/rust-feh-perf-OCjDyZ`)
+- [x] T014 [US1] Execute V2 scroll protocol (5s rapid scrollbar drag) — **pass** 2026-06-28: user confirmed smooth scrolling, no freeze during rapid full-range drag on 10k list
+- [x] T015 [US1] Sample RSS — **pass** 2026-06-28: `./scripts/measure-resources.sh 10000 15` peak RSS 142.8 MB (< 150 MB threshold); recorded in `validation-results.md`
+- [x] T016 [US1] Fill all mandatory ValidationRun fields in `specs/003-gui-performance-validation/validation-results.md` per `contracts/validation-run.md`
+- [x] T017 [US1] Update `specs/001-persistent-ui-virtual-browsing/gap-audit.md` SC-002 and SC-004 `validated` columns — done 2026-06-28 (both pass)
 
 ---
 

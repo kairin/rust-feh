@@ -58,9 +58,9 @@ Runs `cargo build --release`, `cargo clippy`, `cargo test` (including `tests/fea
    rescan button, and action buttons (Open in feh, Set as wallpaper, Quick resize)
    remains visible.
 4. Scroll the image list to the bottom using the scrollbar.
-5. **Verify**: Top controls remain visible and clickable. The bottom status bar
-   remains visible showing "Showing X / Y images" (counter MUST be in bottom bar, not
-   in the scrollable list area).
+5. **Verify**: Top controls remain visible and clickable. The right inspector/session-status
+   region remains visible showing "Showing X / Y images" (counter MUST be in a persistent
+   status region, not in the scrollable list area).
 6. Type a filter term in the search box.
 7. **Verify**: The search box is accessible (not scrolled away). The list updates
    to show matching entries.
@@ -83,7 +83,7 @@ Runs `cargo build --release`, `cargo clippy`, `cargo test` (including `tests/fea
 1. Launch the application fresh.
 2. Click "Choose folder" and select a directory with images.
 3. **Verify**: After loading, the first image is highlighted in the list. The
-   status bar shows "Selected: <filename>" or similar. **No feh window appears.**
+   inspector/session-status region shows "Selected: <filename>" or similar. **No feh window appears.**
 4. Click "Open in feh".
 5. **Verify**: feh launches with the selected image.
 6. Close feh. Click a different image in the list.

@@ -15,8 +15,8 @@ regenerated tasks.md (64 tasks, FR-001–FR-015 traceability table).
 
 Refactor the single-CentralPanel egui layout into a multi-panel structure with persistent
 top controls (folder picker, filter, actions), virtualized image list via `show_rows`,
-a persistent bottom status bar, and a clarified selection model where folder-load selects
-the first image but does not auto-launch feh. This is the foundational UX layer that
+a persistent inspector/session-status region, and a clarified selection model where
+folder-load selects the first image but does not auto-launch feh. This is the foundational UX layer that
 thumbnails, menu bars, and richer interactions will build upon.
 
 ## Technical Context
@@ -84,7 +84,7 @@ specs/001-persistent-ui-virtual-browsing/
 
 ```text
 src/
-├── main.rs              # egui App: panels, menu, toolbar, virtualized list, bottom status
+├── main.rs              # egui App: panels, menu, toolbar, virtualized list, inspector/session status
 ├── scanner.rs           # Directory scanner (walkdir, unchanged)
 ├── image_proc.rs        # Image processor (image crate, unchanged)
 └── types.rs             # Domain types (ImageEntry, Selection, SortMode)
@@ -108,12 +108,12 @@ Research findings consolidated in [research.md](./research.md). Key decisions:
 | Decision | Rationale |
 |----------|-----------|
 | `TopBottomPanel::top` for controls | Standard egui pattern for persistent toolbars. Non-scrolling by definition. Controls always visible. |
-| `TopBottomPanel::bottom` for status | Keeps status line fixed while image list scrolls. Standard UX pattern. |
+| `SidePanel::right("inspector")` for status | Keeps status/count visible outside the scrollable image list while leaving room for session/tools details. |
 | `show_rows` for virtualization | Built into egui ScrollArea. Only renders visible rows. No external crate needed. |
 | Pre-computed filtered indices | Compute once per frame, pass to show_rows. Avoids re-filtering inside the render closure. O(n) per frame for 10k items is acceptable (<1ms). |
 | No auto-feh on load | Removes the `open_in_feh(&p)` call from the folder-load path. Status message updated to say "click Open in feh to view". |
 | Menu bar in top panel | Starts Area 2 (menu/navigation). File/View/Tools structure. Menu actions MUST be functional per FR-011 (not stubs). |
-| Counter in bottom status bar | "Showing X / Y images" lives in `TopBottomPanel::bottom`, not CentralPanel (FR-006). |
+| Counter in inspector session status | "Showing X / Y images" lives in persistent inspector/session-status UI, not CentralPanel (FR-006). |
 | Proactive feh detection | `which::which("feh")` at startup; disable buttons when absent (FR-008a, Constitution §IV). |
 | Sync scan responsiveness | Controls stay visible; status shows "Scanning…"; render loop may briefly stall (FR-010). Background scan implemented in later feature. |
 | Filter scroll reset | Scroll position resets to top on filter change (FR-005). |

@@ -6,25 +6,34 @@
 # .envrc.local is gitignored — never commit API tokens or passwords.
 #
 # Parent ~/Apps/.envrc.local (via source_up in .envrc) already loads shared
-# workspace tokens from ~/.dotfiles/: GH_*, HF_TOKEN/HUGGINGFACE_TOKEN,
-# CODACY_ACCOUNT_TOKEN, CODACY_API_TOKEN, CONTEXT7_API_KEY, DEEPSEEK_API_KEY,
-# SAKANA_API_KEY, PLAYWRIGHT_MCP_EXTENSION_TOKEN, and billing vars.
+# workspace tokens from ~/.dotfiles/ (model API keys, GH_*, HF_*, account-level
+# Codacy, Context7, Playwright MCP, billing vars, etc.).
 #
-# Keep this file minimal: Codacy project token + org metadata for THIS repo only.
+# Keep this file minimal: project-specific tokens/metadata and machine overrides
+# for THIS repo only. Workspace-wide model API keys stay parent-only.
+# This file is loaded after shared workspace env so it can override/add only when needed.
 
-load_secret() {
-  local var_name="$1"
-  local token_file="$2"
-  local value
+DOTFILES="${DOTFILES:-${HOME}/.dotfiles}"
 
-  if [ -r "$token_file" ]; then
-    value="$(LC_ALL=C tr -d '\000\r\n' < "$token_file")"
-    export "$var_name=$value"
-  fi
-}
+# Fallback for direct sourcing when parent ~/Apps/.envrc.local was not loaded.
+if ! declare -F load_secret >/dev/null; then
+  load_secret() {
+    local var_name="$1"
+    local token_file="$2"
+    local value
+
+    if [ -r "$token_file" ]; then
+      value="$(LC_ALL=C tr -d '\000\r\n' < "$token_file")"
+      export "$var_name=$value"
+    fi
+  }
+fi
 
 # --- Codacy CLI (project-level) ---
-load_secret CODACY_PROJECT_TOKEN "/home/kkk/.dotfiles/.codacy/kairin-rust-feh.project-token"
+load_secret CODACY_PROJECT_TOKEN "$DOTFILES/.codacy/kairin-rust-feh.project-token"
 export CODACY_ORGANIZATION_PROVIDER="gh"
 export CODACY_USERNAME="kairin"
 export CODACY_PROJECT_NAME="rust-feh"
+
+# --- Rust dev ergonomics ---
+export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"

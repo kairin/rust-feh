@@ -101,7 +101,7 @@ impl ImageEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum WindowSizePreset {
     /// 720 × 540
     Compact,
@@ -110,6 +110,24 @@ pub enum WindowSizePreset {
     Default,
     /// 1280 × 960
     Large,
+}
+
+/// Persisted window sizing choice (feature 006, FR-008 / SC-005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowPreferences {
+    pub version: u32,
+    pub preset: WindowSizePreset,
+    pub resizable: bool,
+}
+
+impl Default for WindowPreferences {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            preset: WindowSizePreset::Default,
+            resizable: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

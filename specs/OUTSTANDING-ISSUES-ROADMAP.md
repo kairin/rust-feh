@@ -6,6 +6,8 @@
 
 Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of **Bucket C**. Remaining work is promoted to **features 002–006** below. This file is the **master index** (feature 007).
 
+> **Next round**: see [NEXT-ROUND-CONSOLIDATED.md](./NEXT-ROUND-CONSOLIDATED.md) — repo-wide consolidation (verified 2026-06-28) of all remaining code gaps, manual validation, Spec Kit artifact work, and stale-task cleanup, with the recommended single-pass execution order and where `/speckit-converge` applies.
+
 ---
 
 ## Multi-agent advisory (when unsure)
