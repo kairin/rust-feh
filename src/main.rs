@@ -2274,10 +2274,11 @@ impl RustFehApp {
                 if ui.add_enabled(ok, egui::Button::new("Apply rename…")).clicked() {
                     self.tools_panel.rename_confirm_open = true;
                 }
-                if self.tools_panel.rename_confirm_open && ok {
-                    if ui.button("Confirm rename").clicked() {
-                        self.tools_apply_rename();
-                    }
+                if self.tools_panel.rename_confirm_open
+                    && ok
+                    && ui.button("Confirm rename").clicked()
+                {
+                    self.tools_apply_rename();
                 }
             }
         });
