@@ -393,6 +393,14 @@ struct RustFehApp {
     start_folder_loaded: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ImageListMetrics {
+    list_height: f32,
+    folder_col_w: f32,
+    status_col_w: f32,
+    row_h: f32,
+}
+
 enum ScanMsg {
     Partial {
         generation: u64,
@@ -2934,9 +2942,7 @@ impl RustFehApp {
         ui: &mut egui::Ui,
         idx: usize,
         list_root: Option<&Path>,
-        folder_col_w: f32,
-        status_col_w: f32,
-        row_h: f32,
+        metrics: ImageListMetrics,
     ) {
         if idx >= self.images.len() {
             return;
@@ -2947,12 +2953,12 @@ impl RustFehApp {
         let status = file_status_label(self.images[idx].status);
         let is_selected = self.selected.as_ref() == Some(&path);
         ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(folder_col_w, row_h), |ui| {
+            ui.allocate_ui(egui::vec2(metrics.folder_col_w, metrics.row_h), |ui| {
                 ui.label(egui::RichText::new(folder).weak());
             });
             let response = ui.selectable_label(is_selected, &name);
             self.handle_image_row_click(&response, path);
-            ui.allocate_ui(egui::vec2(status_col_w, row_h), |ui| {
+            ui.allocate_ui(egui::vec2(metrics.status_col_w, metrics.row_h), |ui| {
                 ui.small(status);
             });
         });
@@ -2963,37 +2969,27 @@ impl RustFehApp {
         ui: &mut egui::Ui,
         filtered: &[usize],
         list_root: Option<&Path>,
-        list_height: f32,
-        folder_col_w: f32,
-        status_col_w: f32,
-        row_h: f32,
+        metrics: ImageListMetrics,
     ) {
         ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(folder_col_w, row_h), |ui| {
+            ui.allocate_ui(egui::vec2(metrics.folder_col_w, metrics.row_h), |ui| {
                 ui.strong("Folder");
             });
             ui.strong("Filename");
-            ui.allocate_ui(egui::vec2(status_col_w, row_h), |ui| {
+            ui.allocate_ui(egui::vec2(metrics.status_col_w, metrics.row_h), |ui| {
                 ui.strong("Status");
             });
         });
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .max_height(list_height)
+            .max_height(metrics.list_height)
             .id_salt(self.scroll_generation)
-            .show_rows(ui, row_h, filtered.len(), |ui, row_range| {
+            .show_rows(ui, metrics.row_h, filtered.len(), |ui, row_range| {
                 for row in row_range {
                     if row >= filtered.len() {
                         break;
                     }
-                    self.render_flat_list_row(
-                        ui,
-                        filtered[row],
-                        list_root,
-                        folder_col_w,
-                        status_col_w,
-                        row_h,
-                    );
+                    self.render_flat_list_row(ui, filtered[row], list_root, metrics);
                 }
             });
     }
@@ -3117,26 +3113,21 @@ impl RustFehApp {
             } else {
                 0.0
             };
-            let list_height = (ui.available_height() - header_h - inventory_h).max(row_h * 4.0);
             let total_w = ui.available_width();
-            let folder_col_w = total_w * 0.35;
-            let status_col_w = total_w * 0.25;
+            let metrics = ImageListMetrics {
+                list_height: (ui.available_height() - header_h - inventory_h).max(row_h * 4.0),
+                folder_col_w: total_w * 0.35,
+                status_col_w: total_w * 0.25,
+                row_h,
+            };
 
             egui::Frame::group(ui.style())
                 .inner_margin(4.0)
                 .show(ui, |ui| {
                     if self.list_view_mode == ListViewMode::FlatList {
-                        self.render_flat_image_list(
-                            ui,
-                            filtered,
-                            list_root,
-                            list_height,
-                            folder_col_w,
-                            status_col_w,
-                            row_h,
-                        );
+                        self.render_flat_image_list(ui, filtered, list_root, metrics);
                     } else {
-                        self.render_tree_image_list(ui, list_root, list_height, row_h);
+                        self.render_tree_image_list(ui, list_root, metrics.list_height, row_h);
                     }
                 });
         });
