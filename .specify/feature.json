@@ -1,25 +1,3 @@
 {
-  "feature_directory": "specs/012-ui-feedback-polish",
-  "master_index": "specs/OUTSTANDING-ISSUES-ROADMAP.md",
-  "master_index_spec": "specs/007-outstanding-roadmap",
-  "promoted_from": "specs/SESSION-2026-06-22-TRACEABILITY.md",
-  "features": [
-    "specs/002-feh-runtime-detection",
-    "specs/003-gui-performance-validation",
-    "specs/004-scanner-resilience",
-    "specs/005-image-list-presentation",
-    "specs/006-window-viewer-stability",
-    "specs/007-outstanding-roadmap",
-    "specs/008-tool-capabilities-panel",
-    "specs/009-external-tool-runtime",
-    "specs/011-browsing-experience-round",
-    "specs/012-ui-feedback-polish"
-  ],
-  "implement_order": [
-    "specs/003-gui-performance-validation",
-    "specs/006-window-viewer-stability"
-  ],
-  "superseded": {
-    "specs/002-feh-runtime-detection": "specs/009-external-tool-runtime"
-  }
+  "feature_directory": "specs/014-multi-feh-clipboard"
 }

@@ -10,6 +10,8 @@ use crate::types::{FileStatus, ImageEntry, ScanInventory};
 
 pub const MAGICK_IDENTIFY_CAP: usize = 500;
 pub const SCAN_WARNING_CAP: usize = 50;
+/// Emit partial scan updates every N native images so the list/feh can be used early.
+pub const SCAN_PROGRESS_EVERY: usize = 200;
 
 /// Format a walkdir error for the activity log (feature 004 / 011).
 pub fn format_walk_warning(err: &walkdir::Error) -> String {
@@ -48,14 +50,33 @@ pub struct ScanResult {
     pub inventory: ScanInventory,
 }
 
-/// Scan `dir` for images and inventory stats. Optional ImageMagick `identify` for unlisted types.
-pub fn scan_images(dir: &Path, recursive: bool, magick_available: bool) -> ScanResult {
+/// Partial scan snapshot for streaming UI updates (feh-first: browse while scan runs).
+#[derive(Debug, Clone)]
+pub struct ScanPartial {
+    pub entries: Vec<ImageEntry>,
+    pub non_image_skipped: usize,
+    pub warnings: Vec<String>,
+    pub magick_truncated: bool,
+}
+
+/// Scan `dir` for images. `magick_identify` runs per-file ImageMagick probes (slow; off by default).
+pub fn scan_images(dir: &Path, recursive: bool, magick_identify: bool) -> ScanResult {
+    scan_images_streaming(dir, recursive, magick_identify, |_| {})
+}
+
+/// Extension-first directory walk; optional incremental `on_partial` callbacks.
+pub fn scan_images_streaming(
+    dir: &Path,
+    recursive: bool,
+    magick_identify: bool,
+    mut on_partial: impl FnMut(ScanPartial),
+) -> ScanResult {
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
     let mut non_image_skipped = 0usize;
     let mut magick_identify_calls = 0usize;
     let mut magick_truncated = false;
-    let magick_bin = if magick_available {
+    let magick_bin = if magick_identify {
         which::which("magick")
             .ok()
             .or_else(|| which::which("convert").ok())
@@ -69,6 +90,7 @@ pub fn scan_images(dir: &Path, recursive: bool, magick_available: bool) -> ScanR
         WalkDir::new(dir).follow_links(false).max_depth(1)
     };
 
+    let mut since_last_emit = 0usize;
     for entry in walker.into_iter() {
         match entry {
             Ok(e) => {
@@ -78,18 +100,33 @@ pub fn scan_images(dir: &Path, recursive: bool, magick_available: bool) -> ScanR
                 let path = e.path().to_path_buf();
                 if is_native_image(&path) {
                     entries.push(ImageEntry::new(path));
+                    since_last_emit += 1;
+                    if since_last_emit >= SCAN_PROGRESS_EVERY {
+                        since_last_emit = 0;
+                        on_partial(ScanPartial {
+                            entries: entries.clone(),
+                            non_image_skipped,
+                            warnings: warnings.clone(),
+                            magick_truncated,
+                        });
+                    }
                     continue;
                 }
-                if magick_available && magick_identify_calls < MAGICK_IDENTIFY_CAP {
+                if is_obvious_non_image(&path) {
+                    non_image_skipped += 1;
+                    continue;
+                }
+                if magick_identify && magick_identify_calls < MAGICK_IDENTIFY_CAP {
                     if is_magick_image(&path, magick_bin.as_deref()) {
                         magick_identify_calls += 1;
                         entries.push(ImageEntry::with_status(
                             path,
                             FileStatus::MagickDetected,
                         ));
+                        since_last_emit += 1;
                         continue;
                     }
-                } else if magick_available && magick_identify_calls >= MAGICK_IDENTIFY_CAP {
+                } else if magick_identify && magick_identify_calls >= MAGICK_IDENTIFY_CAP {
                     magick_truncated = true;
                 }
                 non_image_skipped += 1;
@@ -117,6 +154,29 @@ fn is_native_image(path: &Path) -> bool {
             matches!(
                 e.as_str(),
                 "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp"
+            )
+        }
+        None => false,
+    }
+}
+
+/// Extensions that are never worth a per-file `magick identify` subprocess (videos, archives, etc.).
+fn is_obvious_non_image(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => {
+            let e = ext.to_lowercase();
+            matches!(
+                e.as_str(),
+                // video
+                "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "mpg" | "mpeg" | "wmv" | "flv"
+                    | "vtx"
+                    // audio
+                    | "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a"
+                    // archives / packages
+                    | "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "deb" | "rpm"
+                    // documents / data
+                    | "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md"
+                    | "db" | "sqlite" | "json" | "xml" | "html" | "css" | "js" | "rs" | "py"
             )
         }
         None => false,
@@ -151,6 +211,23 @@ mod tests {
             r.warnings
         );
         assert_eq!(r.inventory.non_image_skipped, 0);
+    }
+
+    #[test]
+    fn scan_skips_obvious_non_images_without_magick_probe() {
+        let dir = std::env::temp_dir().join(format!("rust-feh-skip-video-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        fs::write(dir.join("clip.mp4"), b"fake").unwrap();
+        fs::write(dir.join("bundle.zip"), b"fake").unwrap();
+
+        let r = scan_images(&dir, false, true);
+        assert_eq!(r.entries.len(), 1);
+        assert!(r.entries[0].path.ends_with("photo.jpg"));
+        assert_eq!(r.inventory.non_image_skipped, 2);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -193,6 +270,25 @@ mod tests {
             .map(|e| format_walk_warning(&e))
             .expect("walkdir should error on missing root");
         assert!(warning.starts_with("Scan skip:"));
+    }
+
+    #[test]
+    #[ignore = "manual: times full venice folder when present"]
+    fn bench_venice_scan_skips_mp4_quickly() {
+        use std::time::Instant;
+        let dir = Path::new("/home/kkk/Desktop/venice");
+        if !dir.is_dir() {
+            return;
+        }
+        let start = Instant::now();
+        let r = scan_images(dir, true, true);
+        eprintln!(
+            "venice: {} entries, {} skipped, {:?}",
+            r.entries.len(),
+            r.inventory.non_image_skipped,
+            start.elapsed()
+        );
+        assert!(start.elapsed().as_secs() < 30, "venice scan should finish in <30s after mp4 skip");
     }
 
     #[cfg(unix)]

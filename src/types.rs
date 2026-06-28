@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Core domain types for rust-feh (clean, independent of GUI).
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +74,8 @@ pub struct ImageEntry {
     pub path: PathBuf,
     pub size_bytes: Option<u64>,
     pub status: FileStatus,
+    /// Extended for 013: Optimized (from prepare-fast), Processed (from tools).
+    pub asset_status: AssetStatus,
 }
 
 impl ImageEntry {
@@ -81,6 +84,7 @@ impl ImageEntry {
             path,
             size_bytes: None,
             status: FileStatus::NativeListed,
+            asset_status: AssetStatus::Regular,
         }
     }
 
@@ -89,6 +93,16 @@ impl ImageEntry {
             path,
             size_bytes: None,
             status,
+            asset_status: AssetStatus::Regular,
+        }
+    }
+
+    pub fn with_asset_status(path: PathBuf, status: FileStatus, asset_status: AssetStatus) -> Self {
+        Self {
+            path,
+            size_bytes: None,
+            status,
+            asset_status,
         }
     }
 }
@@ -113,4 +127,140 @@ pub enum SortMode {
     Name,
     /// Relative folder, then filename.
     Folder,
+}
+
+/// A persisted configuration entry for launching an independent feh instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FehLaunchEntry {
+    pub id: String,
+    pub label: Option<String>,
+    pub folder_path: Option<PathBuf>,
+    pub created_at: u64,
+}
+
+/// Ordered persisted collection of feh launch profiles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FehLaunchList {
+    pub version: u32,
+    pub entries: Vec<FehLaunchEntry>,
+}
+
+impl Default for FehLaunchList {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            entries: Vec::new(),
+        }
+    }
+}
+
+/// New types for image tools feature (013).
+
+/// Policy for where processed/renamed output goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputPolicy {
+    /// Create new files in a subfolder (e.g. "processed").
+    NewSubfolder { name: String },
+    /// Create alongside originals with a suffix (e.g. "_resized").
+    SuffixedSibling { suffix: String },
+    /// Backup originals then modify in place (requires explicit confirmation).
+    InPlaceWithBackup { backup_suffix: String },
+}
+
+impl Default for OutputPolicy {
+    fn default() -> Self {
+        Self::NewSubfolder {
+            name: "processed".to_string(),
+        }
+    }
+}
+
+// ProcessOptions lives in image_proc (feature 013).
+// We keep other new types here.
+
+/// High level operation descriptor (for service layer and cache IRIs).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImageOperation {
+    Resize {
+        width: Option<u32>,
+        height: Option<u32>,
+        percent: Option<f32>,
+        fit: Option<FitMode>,
+        filter: Option<Filter>,
+        quality: Option<u8>,
+    },
+    Crop {
+        geometry: String, // "WxH+X+Y"
+    },
+    Convert {
+        target_format: String,
+        quality: Option<u8>,
+    },
+    Rename {
+        pattern: String,
+    },
+}
+
+/// Fit mode for resize (per plan I1 fix, contracts, data-model for professional tools).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FitMode {
+    #[default]
+    Contain,
+    Cover,
+    Stretch,
+}
+
+/// Filter for resize (re-export or wrapper; use image::imageops::FilterType under the hood in image_proc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Filter {
+    #[default]
+    Lanczos3,
+    Nearest,
+    Triangle,
+    CatmullRom,
+    Gaussian,
+}
+
+/// Result of processing one image.
+#[derive(Debug, Clone)]
+pub struct ProcessedResult {
+    pub source_path: std::path::PathBuf,
+    pub dest_path: std::path::PathBuf,
+    pub operation: ImageOperation,
+    pub cache_iri: Option<String>,
+    pub was_cache_hit: bool,
+    pub materialized_for_fast: Option<std::path::PathBuf>,
+}
+
+/// Cache configuration (in-memory for v1 per spec).
+#[derive(Debug, Clone, Default)]
+pub struct CacheConfig {
+    pub enabled: bool,
+    pub root: Option<std::path::PathBuf>,
+    pub passkey_path: Option<std::path::PathBuf>,
+    pub default_ttl: String, // "90 days" or "never"
+}
+
+/// A set of prepared fast-viewing assets (for US5).
+#[derive(Debug, Clone, Default)]
+pub struct PreparedFastSet {
+    pub materialized_paths: Vec<std::path::PathBuf>,
+    pub filelist_path: Option<std::path::PathBuf>,
+    pub source_folder: std::path::PathBuf,
+}
+
+/// Simple rename pattern (parsed).
+#[derive(Debug, Clone, Default)]
+pub struct RenamePattern {
+    pub raw: String,
+    // Tokens expanded at apply time.
+}
+
+/// Status extension for ImageEntry (for optimized assets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AssetStatus {
+    #[default]
+    Regular,
+    Optimized, // from Prepare Fast feh
+    Processed, // from tools
 }
