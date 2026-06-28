@@ -3325,11 +3325,11 @@ impl RustFehApp {
         self.scan_rx = Some(rx);
 
         thread::spawn(move || {
-            let result = scan_images_streaming(&dir_path, recursive, magick_identify, |partial| {
+            let result = scan_images_streaming(&dir_path, recursive, magick_identify, |entries, skipped, _| {
                 let _ = tx.send(ScanMsg::Partial {
                     generation,
-                    entries: partial.entries,
-                    skipped: partial.non_image_skipped,
+                    entries: entries.to_vec(),
+                    skipped,
                 });
             });
             let skipped = result.inventory.non_image_skipped;

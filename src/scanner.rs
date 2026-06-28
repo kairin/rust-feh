@@ -50,18 +50,9 @@ pub struct ScanResult {
     pub inventory: ScanInventory,
 }
 
-/// Partial scan snapshot for streaming UI updates (feh-first: browse while scan runs).
-#[derive(Debug, Clone)]
-pub struct ScanPartial {
-    pub entries: Vec<ImageEntry>,
-    pub non_image_skipped: usize,
-    pub warnings: Vec<String>,
-    pub magick_truncated: bool,
-}
-
 /// Scan `dir` for images. `magick_identify` runs per-file ImageMagick probes (slow; off by default).
 pub fn scan_images(dir: &Path, recursive: bool, magick_identify: bool) -> ScanResult {
-    scan_images_streaming(dir, recursive, magick_identify, |_| {})
+    scan_images_streaming(dir, recursive, magick_identify, |_, _, _| {})
 }
 
 struct ScanWalkState<'a> {
@@ -74,22 +65,28 @@ struct ScanWalkState<'a> {
     magick_identify: bool,
 }
 
+fn emit_scan_partial(
+    state: &ScanWalkState<'_>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) {
+    on_partial(
+        state.entries.as_slice(),
+        *state.non_image_skipped,
+        *state.magick_truncated,
+    );
+}
+
 fn classify_walk_file(
     path: std::path::PathBuf,
     state: &mut ScanWalkState<'_>,
-    on_partial: &mut impl FnMut(ScanPartial),
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
 ) {
     if is_native_image(&path) {
         state.entries.push(ImageEntry::new(path));
         *state.since_last_emit += 1;
         if *state.since_last_emit >= SCAN_PROGRESS_EVERY {
             *state.since_last_emit = 0;
-            on_partial(ScanPartial {
-                entries: state.entries.clone(),
-                non_image_skipped: *state.non_image_skipped,
-                warnings: Vec::new(),
-                magick_truncated: *state.magick_truncated,
-            });
+            emit_scan_partial(state, on_partial);
         }
         return;
     }
@@ -117,7 +114,7 @@ pub fn scan_images_streaming(
     dir: &Path,
     recursive: bool,
     magick_identify: bool,
-    mut on_partial: impl FnMut(ScanPartial),
+    mut on_partial: impl FnMut(&[ImageEntry], usize, bool),
 ) -> ScanResult {
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
@@ -222,6 +219,13 @@ fn is_magick_image(path: &Path, magick_bin: Option<&Path>) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
+
+    fn scanner_test_dir(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(name)
+    }
 
     #[test]
     fn scan_nonexistent_dir_returns_empty() {
@@ -237,9 +241,7 @@ mod tests {
 
     #[test]
     fn scan_skips_obvious_non_images_without_magick_probe() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("scanner-skip-video-{}", std::process::id()));
+        let dir = scanner_test_dir(&format!("scanner-skip-video-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("photo.jpg"), b"x").unwrap();
@@ -256,7 +258,7 @@ mod tests {
 
     #[test]
     fn scan_finds_supported_extension() {
-        let dir = std::env::temp_dir().join("rust-feh-scanner-test");
+        let dir = scanner_test_dir("rust-feh-scanner-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("photo.jpg"), b"x").unwrap();
@@ -320,7 +322,7 @@ mod tests {
     fn format_walk_warning_permission_denied_prefix() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join("rust-feh-format-walk-perms");
+        let dir = scanner_test_dir("rust-feh-format-walk-perms");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let secret = dir.join("secret");
