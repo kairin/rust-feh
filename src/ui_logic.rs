@@ -164,6 +164,15 @@ pub fn build_entry_filelist(entry: &FehLaunchEntry, images: &[ImageEntry]) -> Ve
         .collect()
 }
 
+fn entry_launch_block_reason(entry: &FehLaunchEntry) -> Option<&'static str> {
+    let folder = entry.folder_path.as_deref()?;
+    if folder.is_dir() {
+        None
+    } else {
+        Some("Folder not found")
+    }
+}
+
 /// Explain whether a configured launch entry can be launched now.
 pub fn entry_is_launchable(
     entry: &FehLaunchEntry,
@@ -176,16 +185,16 @@ pub fn entry_is_launchable(
             status: feh_not_installed_launch_status(),
         };
     }
-    let Some(folder) = entry.folder_path.as_deref() else {
+    if entry.folder_path.is_none() {
         return EntryLaunchState {
             launchable: false,
             status: "Select a folder".to_string(),
         };
-    };
-    if !folder.is_dir() {
+    }
+    if let Some(reason) = entry_launch_block_reason(entry) {
         return EntryLaunchState {
             launchable: false,
-            status: "Folder not found".to_string(),
+            status: reason.to_string(),
         };
     }
     let count = entry_folder_images(entry, images).len();

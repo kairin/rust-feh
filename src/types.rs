@@ -31,27 +31,21 @@ pub struct ScanInventory {
 }
 
 impl ScanInventory {
+    fn count_status(entries: &[ImageEntry], status: FileStatus) -> usize {
+        entries.iter().filter(|e| e.status == status).count()
+    }
+
     pub fn from_entries(entries: &[ImageEntry], non_image_skipped: usize, magick_truncated: bool) -> Self {
-        let native_listed = entries
+        let native_listed = Self::count_status(entries, FileStatus::NativeListed);
+        let converted = Self::count_status(entries, FileStatus::Converted);
+        let awaiting_convert = Self::count_status(entries, FileStatus::MagickDetected);
+        let magick_converted = entries
             .iter()
-            .filter(|e| e.status == FileStatus::NativeListed)
+            .filter(|e| e.status == FileStatus::Converted && is_magick_origin(e))
             .count();
-        let converted = entries
-            .iter()
-            .filter(|e| e.status == FileStatus::Converted)
-            .count();
-        let awaiting_convert = entries
-            .iter()
-            .filter(|e| e.status == FileStatus::MagickDetected)
-            .count();
-        let magick_detected = awaiting_convert
-            + entries
-                .iter()
-                .filter(|e| e.status == FileStatus::Converted && is_magick_origin(e))
-                .count();
         Self {
             native_listed,
-            magick_detected,
+            magick_detected: awaiting_convert + magick_converted,
             converted,
             awaiting_convert,
             non_image_skipped,

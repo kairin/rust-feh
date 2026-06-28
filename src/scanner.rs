@@ -106,7 +106,7 @@ pub fn scan_images_streaming(
                         on_partial(ScanPartial {
                             entries: entries.clone(),
                             non_image_skipped,
-                            warnings: warnings.clone(),
+                            warnings: Vec::new(),
                             magick_truncated,
                         });
                     }
@@ -137,7 +137,7 @@ pub fn scan_images_streaming(
         }
     }
 
-    entries.sort_by_key(|e| e.path.clone());
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
     let inventory = ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
     let warnings = summarize_scan_warnings(warnings);
     ScanResult {
