@@ -3251,6 +3251,46 @@ impl RustFehApp {
         );
     }
 
+    fn handle_scan_msg(
+        &mut self,
+        msg: ScanMsg,
+        ctx: &egui::Context,
+        still_scanning: &mut bool,
+    ) {
+        match msg {
+            ScanMsg::Partial {
+                generation,
+                entries,
+                skipped,
+            } if generation == self.scan_generation => {
+                self.apply_scan_partial(entries, skipped);
+                ctx.request_repaint();
+            }
+            ScanMsg::Complete {
+                generation,
+                dir_label,
+                result,
+            } if generation == self.scan_generation => {
+                self.apply_scan_result(&dir_label, result);
+                *still_scanning = false;
+                self.scanning = false;
+            }
+            ScanMsg::Converted {
+                generation,
+                entries,
+                non_image_skipped,
+                magick_truncated,
+            } if generation == self.scan_generation => {
+                let inventory =
+                    ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
+                self.images = entries;
+                self.scan_inventory = Some(inventory);
+                self.log("Converted-status metadata updated (background)");
+            }
+            _ => {}
+        }
+    }
+
     fn poll_scan_complete(&mut self, ctx: &egui::Context) {
         let mut messages = Vec::new();
         if let Some(rx) = &self.scan_rx {
@@ -3260,43 +3300,9 @@ impl RustFehApp {
         }
         let mut still_scanning = self.scanning;
         for msg in messages {
-            match msg {
-                ScanMsg::Partial {
-                    generation,
-                    entries,
-                    skipped,
-                } if generation == self.scan_generation => {
-                    self.apply_scan_partial(entries, skipped);
-                    ctx.request_repaint();
-                }
-                ScanMsg::Complete {
-                    generation,
-                    dir_label,
-                    result,
-                } if generation == self.scan_generation => {
-                    self.apply_scan_result(&dir_label, result);
-                    still_scanning = false;
-                    self.scanning = false;
-                }
-                ScanMsg::Converted {
-                    generation,
-                    entries,
-                    non_image_skipped,
-                    magick_truncated,
-                } if generation == self.scan_generation => {
-                    let inventory =
-                        ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
-                    self.images = entries;
-                    self.scan_inventory = Some(inventory);
-                    self.log("Converted-status metadata updated (background)");
-                }
-                _ => {}
-            }
+            self.handle_scan_msg(msg, ctx, &mut still_scanning);
         }
         self.scanning = still_scanning;
-        if !still_scanning && self.scan_rx.is_some() {
-            // Keep rx open for Converted messages until folder changes.
-        }
         if self.scanning {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

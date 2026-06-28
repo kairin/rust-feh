@@ -76,67 +76,84 @@ fn emit_scan_partial(
     );
 }
 
+fn record_native_image(
+    path: std::path::PathBuf,
+    state: &mut ScanWalkState<'_>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) {
+    state.entries.push(ImageEntry::new(path));
+    *state.since_last_emit += 1;
+    if *state.since_last_emit >= SCAN_PROGRESS_EVERY {
+        *state.since_last_emit = 0;
+        emit_scan_partial(state, on_partial);
+    }
+}
+
+fn try_magick_probe(path: std::path::PathBuf, state: &mut ScanWalkState<'_>) -> bool {
+    if !state.magick_identify {
+        return false;
+    }
+    if *state.magick_identify_calls >= MAGICK_IDENTIFY_CAP {
+        *state.magick_truncated = true;
+        return false;
+    }
+    if !is_magick_image(&path, state.magick_bin) {
+        return false;
+    }
+    *state.magick_identify_calls += 1;
+    state
+        .entries
+        .push(ImageEntry::with_status(path, FileStatus::MagickDetected));
+    *state.since_last_emit += 1;
+    true
+}
+
 fn classify_walk_file(
     path: std::path::PathBuf,
     state: &mut ScanWalkState<'_>,
     on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
 ) {
     if is_native_image(&path) {
-        state.entries.push(ImageEntry::new(path));
-        *state.since_last_emit += 1;
-        if *state.since_last_emit >= SCAN_PROGRESS_EVERY {
-            *state.since_last_emit = 0;
-            emit_scan_partial(state, on_partial);
-        }
+        record_native_image(path, state, on_partial);
         return;
     }
     if is_obvious_non_image(&path) {
         *state.non_image_skipped += 1;
         return;
     }
-    if state.magick_identify && *state.magick_identify_calls < MAGICK_IDENTIFY_CAP {
-        if is_magick_image(&path, state.magick_bin) {
-            *state.magick_identify_calls += 1;
-            state
-                .entries
-                .push(ImageEntry::with_status(path, FileStatus::MagickDetected));
-            *state.since_last_emit += 1;
-            return;
-        }
-    } else if state.magick_identify && *state.magick_identify_calls >= MAGICK_IDENTIFY_CAP {
-        *state.magick_truncated = true;
+    if try_magick_probe(path, state) {
+        return;
     }
     *state.non_image_skipped += 1;
 }
 
-/// Extension-first directory walk; optional incremental `on_partial` callbacks.
-pub fn scan_images_streaming(
+fn resolve_magick_bin(magick_identify: bool) -> Option<std::path::PathBuf> {
+    if !magick_identify {
+        return None;
+    }
+    which::which("magick")
+        .ok()
+        .or_else(|| which::which("convert").ok())
+}
+
+fn walk_scan_files(
     dir: &Path,
     recursive: bool,
     magick_identify: bool,
-    mut on_partial: impl FnMut(&[ImageEntry], usize, bool),
-) -> ScanResult {
+    magick_bin: Option<&Path>,
+    on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
+) -> (Vec<ImageEntry>, Vec<String>, usize, bool) {
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
     let mut non_image_skipped = 0usize;
     let mut magick_identify_calls = 0usize;
     let mut magick_truncated = false;
-    let magick_bin = if magick_identify {
-        which::which("magick")
-            .ok()
-            .or_else(|| which::which("convert").ok())
-    } else {
-        None
-    };
-    let magick_bin_ref = magick_bin.as_deref();
-
+    let mut since_last_emit = 0usize;
     let walker = if recursive {
         WalkDir::new(dir).follow_links(false)
     } else {
         WalkDir::new(dir).follow_links(false).max_depth(1)
     };
-
-    let mut since_last_emit = 0usize;
     for entry in walker.into_iter() {
         match entry {
             Ok(e) if e.file_type().is_file() => {
@@ -146,22 +163,33 @@ pub fn scan_images_streaming(
                     magick_identify_calls: &mut magick_identify_calls,
                     magick_truncated: &mut magick_truncated,
                     since_last_emit: &mut since_last_emit,
-                    magick_bin: magick_bin_ref,
+                    magick_bin,
                     magick_identify,
                 };
-                classify_walk_file(e.path().to_path_buf(), &mut state, &mut on_partial);
+                classify_walk_file(e.path().to_path_buf(), &mut state, on_partial);
             }
             Ok(_) => {}
             Err(e) => warnings.push(format_walk_warning(&e)),
         }
     }
+    (entries, warnings, non_image_skipped, magick_truncated)
+}
 
+/// Extension-first directory walk; optional incremental `on_partial` callbacks.
+pub fn scan_images_streaming(
+    dir: &Path,
+    recursive: bool,
+    magick_identify: bool,
+    mut on_partial: impl FnMut(&[ImageEntry], usize, bool),
+) -> ScanResult {
+    let magick_bin = resolve_magick_bin(magick_identify);
+    let (mut entries, warnings, non_image_skipped, magick_truncated) =
+        walk_scan_files(dir, recursive, magick_identify, magick_bin.as_deref(), &mut on_partial);
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     let inventory = ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
-    let warnings = summarize_scan_warnings(warnings);
     ScanResult {
         entries,
-        warnings,
+        warnings: summarize_scan_warnings(warnings),
         inventory,
     }
 }
