@@ -223,6 +223,31 @@ pub fn validate_handoff(content: &str, filelist: &[PathBuf]) -> Option<PathBuf> 
     nearest_surviving_neighbor(filelist, index)
 }
 
+/// Handoff file path for one round-trip viewer (contract:
+/// `runtime_cache_dir()/handoff-<pid>-<viewer_id>`), unique per viewer.
+pub fn handoff_path(pid: u32, viewer_id: u64) -> PathBuf {
+    runtime_cache_dir().join(format!("handoff-{pid}-{viewer_id}"))
+}
+
+/// Remove any leftover `handoff-*` files under the runtime cache dir (e.g.
+/// left behind if rust-feh exited while round-trip viewers were still open).
+/// Called once at startup. Returns the number of files removed; best-effort
+/// (I/O errors on individual files are silently skipped, not fatal).
+pub fn cleanup_stale_handoffs() -> usize {
+    let dir = runtime_cache_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("handoff-") && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Scratch directory for Prepare Fast materialized JPEGs (session-scoped).
 pub fn prepare_fast_work_dir() -> PathBuf {
     runtime_cache_dir().join(format!("prepare-fast-{}", std::process::id()))
@@ -2634,5 +2659,66 @@ mod tests {
         let content = format!("{}\n/etc/passwd\ngarbage line\n", a.display());
         assert_eq!(validate_handoff(&content, &filelist), Some(a));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Feature 016 T017: handoff_path (handoff file path generation) ----
+
+    #[test]
+    fn handoff_path_includes_pid_and_viewer_id() {
+        let path = handoff_path(1234, 7);
+        let file_name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(file_name, "handoff-1234-7");
+        assert_eq!(path.parent().unwrap(), runtime_cache_dir());
+    }
+
+    #[test]
+    fn handoff_path_distinct_per_viewer_id() {
+        let path1 = handoff_path(1234, 1);
+        let path2 = handoff_path(1234, 2);
+        assert_ne!(path1, path2);
+    }
+
+    #[test]
+    fn cleanup_stale_handoffs_removes_only_handoff_prefixed_files() {
+        let dir = runtime_cache_dir();
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Use distinctive names to identify our test files
+        let handoff_file_1 = dir.join("handoff-9999-cleanup-test-1");
+        let handoff_file_2 = dir.join("handoff-9999-cleanup-test-2");
+        let non_handoff_file = dir.join("filelist-9999.txt");
+
+        // Create test files
+        std::fs::write(&handoff_file_1, b"test").unwrap();
+        std::fs::write(&handoff_file_2, b"test").unwrap();
+        std::fs::write(&non_handoff_file, b"test").unwrap();
+
+        // Call cleanup
+        let removed = cleanup_stale_handoffs();
+
+        // Both handoff files should be gone
+        assert!(!handoff_file_1.exists(), "handoff file 1 should be removed");
+        assert!(!handoff_file_2.exists(), "handoff file 2 should be removed");
+
+        // Non-handoff file should still exist
+        assert!(non_handoff_file.exists(), "non-handoff file should remain");
+
+        // Cleanup our test file
+        let _ = std::fs::remove_file(&non_handoff_file);
+
+        // At least 2 files were removed (our test files, possibly others)
+        assert!(removed >= 2, "should have removed at least 2 files, got {removed}");
+    }
+
+    #[test]
+    fn cleanup_stale_handoffs_does_not_panic_when_called() {
+        // This tests that cleanup is safe to call; it should not panic
+        // even if the directory exists and has stale handoffs.
+        let _ = cleanup_stale_handoffs();
+        // If we got here without panicking, the test passes.
     }
 }
