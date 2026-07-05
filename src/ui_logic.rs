@@ -248,6 +248,19 @@ pub fn cleanup_stale_handoffs() -> usize {
     removed
 }
 
+/// Isolated feh config directory for round-trip viewers (research R2):
+/// pointing `XDG_CONFIG_HOME` here means launched viewers never read, write,
+/// or shadow the user's personal `~/.config/feh` — stock navigation defaults,
+/// no personal-theme overlays. Created empty on first use; idempotent.
+pub fn viewer_profile_dir() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = base.join(".config").join("rust-feh").join("viewer-profile");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Scratch directory for Prepare Fast materialized JPEGs (session-scoped).
 pub fn prepare_fast_work_dir() -> PathBuf {
     runtime_cache_dir().join(format!("prepare-fast-{}", std::process::id()))
@@ -2720,5 +2733,14 @@ mod tests {
         // even if the directory exists and has stale handoffs.
         let _ = cleanup_stale_handoffs();
         // If we got here without panicking, the test passes.
+    }
+
+    #[test]
+    fn viewer_profile_dir_creation_is_idempotent() {
+        let dir1 = viewer_profile_dir();
+        assert!(dir1.is_dir(), "viewer profile dir should exist after first call");
+        let dir2 = viewer_profile_dir();
+        assert_eq!(dir1, dir2, "path should be stable across calls");
+        assert!(dir2.is_dir(), "viewer profile dir should still exist after second call");
     }
 }

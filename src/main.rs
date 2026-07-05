@@ -14,13 +14,14 @@ use rust_feh::types::{
 };
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, apply_converted_detection, apply_rename_pairs,
-    build_entry_filelist, clamp_window_size, collision_suffixed_path, compute_output_path,
+    build_entry_filelist, clamp_window_size, cleanup_stale_handoffs, collision_suffixed_path,
+    compute_output_path,
     copy_image_to_clipboard, crop_preview_pixels,
     EntryLaunchState,
     default_tree_expanded, entry_is_launchable, execute_move_plan, expand_rename_pattern,
     feh_filelist_temp_path,
     feh_entry_filelist_path, feh_missing_status, feh_not_installed_launch_status,
-    file_name_display, file_status_label, format_action_outcome, load_action_prefs,
+    file_name_display, file_status_label, format_action_outcome, handoff_path, load_action_prefs,
     prepare_fast_work_dir,
     finalize_scan_entries_fast,
     folder_line_suffix, folder_tree_display_name, format_image_tools_log, format_inventory_bar,
@@ -29,7 +30,8 @@ use rust_feh::ui_logic::{
     post_scan_status,
     refresh_entry_and_inventory, relative_folder, save_action_prefs, save_copy_to,
     save_launch_list, save_window_prefs,
-    scan_magick_enabled, showing_count_label,
+    scan_magick_enabled, showing_count_label, validate_handoff, viewer_profile_dir,
+    viewer_spawn_command,
     sort_mode_label, spawn_job, tree_file_glyph, tree_visible_rows, window_preset_dimensions,
     window_preset_label, write_feh_filelist, write_feh_filelist_to, JobMsg, TreeRow, TreeRowKind,
     FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM, WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
@@ -52,6 +54,10 @@ fn create_rust_feh_app(
     tools_panel_ok: bool,
 ) -> Box<dyn App> {
     let window_prefs = load_window_prefs();
+    // Reap any handoff files orphaned by a prior session's round-trip
+    // viewers that outlived rust-feh (contract: "stale handoff files under
+    // runtime cache are cleaned at next startup").
+    let _ = cleanup_stale_handoffs();
     Box::new(RustFehApp {
         current_dir: None,
         images: vec![],
@@ -113,6 +119,9 @@ fn create_rust_feh_app(
         stage_texture: None,
         stage_pane_collapsed: false,
         action_prefs: load_action_prefs(),
+        round_trips: Vec::new(),
+        next_viewer_id: 0,
+        pending_scroll_path: None,
     })
 }
 
@@ -421,6 +430,13 @@ struct RustFehApp {
     stage_texture: Option<egui::TextureHandle>,
     stage_pane_collapsed: bool,
     action_prefs: ActionPrefs,
+    /// Live round-trip viewers, polled every frame (feature 016, US2).
+    round_trips: Vec<ViewerRoundTrip>,
+    next_viewer_id: u64,
+    /// Set when a round-trip handoff lands on an image; consumed by the flat
+    /// list's render pass to force-scroll to it once (US2 AS1: "list scrolls
+    /// to it").
+    pending_scroll_path: Option<PathBuf>,
 }
 
 enum FehEntryAction {
@@ -472,6 +488,19 @@ enum StageDecodeMsg {
         generation: u64,
         reason: String,
     },
+}
+
+/// A launched cycling viewer tied to its originating rust-feh state (feature
+/// 016, contracts/viewer-roundtrip.md). Polled once per frame via `try_wait`;
+/// on exit the handoff file is validated and, if accepted, staged. Holds a
+/// live `Child`, which is why this lives in main.rs rather than types.rs
+/// (same precedent as `ActiveToolsJob`, which holds a live `Receiver`).
+struct ViewerRoundTrip {
+    child: std::process::Child,
+    handoff_path: PathBuf,
+    launched_with: PathBuf,
+    filelist: Vec<PathBuf>,
+    viewer_id: u64,
 }
 
 impl Drop for RustFehApp {
@@ -3123,18 +3152,34 @@ impl RustFehApp {
                 ui.strong("Status");
             });
         });
-        egui::ScrollArea::vertical()
+        let mut scroll_area = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .max_height(metrics.list_height)
-            .id_salt(self.scroll_generation)
-            .show_rows(ui, metrics.row_h, filtered.len(), |ui, row_range| {
-                for row in row_range {
-                    if row >= filtered.len() {
-                        break;
-                    }
-                    self.render_flat_list_row(ui, filtered[row], list_root, metrics);
+            .id_salt(self.scroll_generation);
+        if let Some(offset) = self.pending_flat_scroll_offset(filtered, metrics) {
+            scroll_area = scroll_area.vertical_scroll_offset(offset);
+        }
+        scroll_area.show_rows(ui, metrics.row_h, filtered.len(), |ui, row_range| {
+            for row in row_range {
+                if row >= filtered.len() {
+                    break;
                 }
-            });
+                self.render_flat_list_row(ui, filtered[row], list_root, metrics);
+            }
+        });
+    }
+
+    /// One-shot forced scroll offset for a pending round-trip landing (feature
+    /// 016, US2 AS1: "the list scrolls to it"); consumes `pending_scroll_path`
+    /// so it only forces the position once, not every frame.
+    fn pending_flat_scroll_offset(
+        &mut self,
+        filtered: &[usize],
+        metrics: ImageListMetrics,
+    ) -> Option<f32> {
+        let target = self.pending_scroll_path.take()?;
+        let row = filtered.iter().position(|&i| self.images[i].path == target)?;
+        Some((row as f32 * metrics.row_h - metrics.list_height / 2.0).max(0.0))
     }
 
     fn toggle_tree_folder(&mut self, folder_path: &str) {
@@ -3683,6 +3728,7 @@ impl App for RustFehApp {
         self.poll_tools_job(ctx);
         Self::emit_startup_notice_once();
         self.sync_frame_input_state(ctx);
+        self.poll_round_trip_viewers(ctx);
         self.kick_stage_decode_if_selection_changed(ctx);
         self.poll_stage_decode(ctx);
 
@@ -3907,6 +3953,11 @@ impl RustFehApp {
         }
     }
 
+    /// Open the current filtered list in a round-trip feh viewer (feature 016,
+    /// US2): rust-feh retains the `Child`, and when the user closes it, the
+    /// image they landed on is selected and staged back in rust-feh. Other
+    /// feh launches (Launch All, per-entry, wallpaper) are unaffected and
+    /// keep using `spawn_feh_viewer` (fire-and-forget, unchanged — US3/T021).
     fn open_in_feh(&mut self, path: &Path) {
         let (_, indices) = self.compute_list_indices();
         if indices.is_empty() {
@@ -3918,9 +3969,9 @@ impl RustFehApp {
             return;
         }
 
-        let paths: Vec<&Path> = indices
+        let paths: Vec<PathBuf> = indices
             .iter()
-            .map(|&i| self.images[i].path.as_path())
+            .map(|&i| self.images[i].path.clone())
             .collect();
 
         let list_path = feh_filelist_temp_path();
@@ -3933,12 +3984,119 @@ impl RustFehApp {
             }
         };
 
-        self.spawn_feh_viewer(
-            &list_path,
-            path,
-            format!("Spawning feh with filelist ({count} images)"),
-            format!("Launched feh on {}", path.display()),
-        );
+        self.spawn_round_trip_viewer(&list_path, path, paths, count);
+    }
+
+    fn spawn_round_trip_viewer(
+        &mut self,
+        list_path: &Path,
+        start_at: &Path,
+        filelist: Vec<PathBuf>,
+        count: usize,
+    ) {
+        self.next_viewer_id = self.next_viewer_id.wrapping_add(1);
+        let viewer_id = self.next_viewer_id;
+        let handoff = handoff_path(std::process::id(), viewer_id);
+        let profile_dir = viewer_profile_dir();
+        let (program, args, envs) = viewer_spawn_command(list_path, start_at, &handoff, &profile_dir);
+
+        let mut cmd = Command::new(&program);
+        cmd.args(&args);
+        for (key, value) in &envs {
+            cmd.env(key, value);
+        }
+        self.log(format!(
+            "Spawning round-trip feh with filelist ({count} images)"
+        ));
+        match cmd.spawn() {
+            Ok(child) => {
+                self.log(format!(
+                    "feh launched (pid {:?}, round-trip viewer {viewer_id})",
+                    child.id()
+                ));
+                self.status = format!("Launched feh on {}", start_at.display());
+                self.round_trips.push(ViewerRoundTrip {
+                    child,
+                    handoff_path: handoff,
+                    launched_with: start_at.to_path_buf(),
+                    filelist,
+                    viewer_id,
+                });
+            }
+            Err(e) => {
+                self.log(format!("Failed to spawn feh: {e}"));
+                if feh_spawn_unavailable(&e) {
+                    self.mark_feh_unavailable();
+                } else {
+                    self.status = format!("Failed to launch feh (is it installed?): {e}");
+                }
+            }
+        }
+    }
+
+    /// Poll every live round-trip viewer once per frame (contract: "retains
+    /// the Child and polls try_wait() every frame"); any status (success or
+    /// signal) counts as a close and triggers handoff handling.
+    fn poll_round_trip_viewers(&mut self, ctx: &egui::Context) {
+        if self.round_trips.is_empty() {
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        let mut exited_at = Vec::new();
+        for (i, rt) in self.round_trips.iter_mut().enumerate() {
+            if matches!(rt.child.try_wait(), Ok(Some(_))) {
+                exited_at.push(i);
+            }
+        }
+        // Remove back-to-front so earlier indices stay valid; process in the
+        // order they were detected (close order) per contract "each exit is
+        // processed independently in close order; the most recent close wins".
+        for &i in exited_at.iter().rev() {
+            let rt = self.round_trips.remove(i);
+            self.handle_round_trip_exit(rt);
+        }
+    }
+
+    fn handle_round_trip_exit(&mut self, rt: ViewerRoundTrip) {
+        let content = std::fs::read_to_string(&rt.handoff_path).unwrap_or_default();
+        let landed = validate_handoff(&content, &rt.filelist);
+        let _ = std::fs::remove_file(&rt.handoff_path);
+        match landed {
+            Some(path) => {
+                self.log(format!(
+                    "Round trip (viewer {}): {} -> {}",
+                    rt.viewer_id,
+                    rt.launched_with.display(),
+                    path.display()
+                ));
+                self.stage_selection_from_round_trip(&path);
+            }
+            None => {
+                self.log(format!(
+                    "Round trip (viewer {}) closed without a usable handoff (content length {})",
+                    rt.viewer_id,
+                    content.len()
+                ));
+            }
+        }
+    }
+
+    /// Select + stage the landed image, scrolling the list to it (US2 AS1).
+    /// If it no longer passes the active filter, clear the filter rather than
+    /// silently dropping the handoff (US2-3).
+    fn stage_selection_from_round_trip(&mut self, path: &Path) {
+        self.selected = Some(path.to_path_buf());
+        self.pending_scroll_path = Some(path.to_path_buf());
+        let (_, indices) = self.compute_list_indices();
+        let in_filter = indices.iter().any(|&i| self.images[i].path.as_path() == path);
+        let name = file_name_display(path);
+        if in_filter {
+            self.status = format!("Round trip landed on {name}");
+        } else {
+            self.search.clear();
+            self.status =
+                format!("Round trip landed on {name} — cleared the active filter to show it");
+        }
     }
 
 }
