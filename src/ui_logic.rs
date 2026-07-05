@@ -653,7 +653,7 @@ pub fn list_indices(
     sort: SortMode,
 ) -> Vec<usize> {
     let mut indices = filter_indices(images, root, search);
-    indices.sort_by(|&a, &b| sort_key(images, a, sort, root).cmp(&sort_key(images, b, sort, root)));
+    indices.sort_by_key(|&a| sort_key(images, a, sort, root));
     indices
 }
 
