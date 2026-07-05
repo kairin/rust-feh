@@ -1561,6 +1561,14 @@ mod tests {
     /// flake, tightened while touching this file for feature 016).
     static FEH_FILELIST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// `cleanup_stale_handoffs()` operates on one real shared directory
+    /// (`runtime_cache_dir()`); the tests below must not interleave their own
+    /// create-then-cleanup sequences under cargo's parallel test threads, or
+    /// one test's cleanup call can sweep away another's not-yet-asserted files
+    /// (observed flake: `removed >= 2` failing when a concurrent thread's own
+    /// `cleanup_stale_handoffs()` call won the race).
+    static HANDOFF_CLEANUP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn post_scan_appends_feh_warning_when_unavailable() {
         let s = post_scan_status("Loaded 5 images.", false);
@@ -2697,6 +2705,9 @@ mod tests {
 
     #[test]
     fn cleanup_stale_handoffs_removes_only_handoff_prefixed_files() {
+        let _guard = HANDOFF_CLEANUP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = runtime_cache_dir();
         let _ = std::fs::create_dir_all(&dir);
 
@@ -2729,6 +2740,9 @@ mod tests {
 
     #[test]
     fn cleanup_stale_handoffs_does_not_panic_when_called() {
+        let _guard = HANDOFF_CLEANUP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // This tests that cleanup is safe to call; it should not panic
         // even if the directory exists and has stale handoffs.
         let _ = cleanup_stale_handoffs();

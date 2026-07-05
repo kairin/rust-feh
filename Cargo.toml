@@ -74,3 +74,7 @@ path = "tests/perf/sc_timing.rs"
 [[test]]
 name = "feature_016_actions"
 path = "tests/integration/feature_016_actions.rs"
+
+[[test]]
+name = "feature_016_roundtrip"
+path = "tests/integration/feature_016_roundtrip.rs"
