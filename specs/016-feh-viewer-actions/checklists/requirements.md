@@ -1,4 +1,4 @@
-# Specification Quality Checklist: In-Viewer Image Actions (feh)
+# Specification Quality Checklist: Viewer Round-Trip & Staged-Image Actions
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-07-05
@@ -32,6 +32,14 @@
 ## Notes
 
 - Validation pass 1 (2026-07-05): all items pass. Ready for `/speckit-plan`.
-- Feasibility pre-verified by lead architect on the target machine (2026-07-05):
-  the viewer supports per-launch isolated configuration and titled per-image
-  action hooks; overlay-free operation confirmed.
+- Validation pass 2 (2026-07-05, after maintainer rework): all items re-pass.
+  The rework moves the interaction surface from feh-side key hooks to a
+  rust-feh staged-image pane with right-click context actions, and adds the
+  feh close-handoff round-trip; both recorded as intended-behavior changes in
+  the spec Clarifications (maintainer-initiated).
+- Feasibility pre-verified by lead architect on the target machine
+  (2026-07-05): per-launch isolated viewer configuration works; the per-image
+  trail hook silently emits the displayed image's path (no overlays) and the
+  last-displayed image is recoverable at close. Also verified: the on-image
+  numbering the maintainer disliked originates from their personal feh theme,
+  so profile isolation removes it in launched viewers.
