@@ -7,34 +7,28 @@ use rust_feh::image_proc::{decode_stage_rgba, process_image, ImageToolsService, 
 use rust_feh::scanner::{scan_images_streaming, ScanResult};
 use rust_feh::tool_caps::{feh_spawn_unavailable, DepKind, FormatRoute, ToolCapabilities};
 use rust_feh::types::{
-    ActionKind, ActionOutcome, ActionPrefs, ActionResult, AssetStatus, CacheConfig,
-    ContextAction, FehLaunchEntry, FehLaunchList, FitMode, Filter, ImageEntry, ImageOperation,
-    ListViewMode, OutputPolicy, PreparedFastSet, ProcessedResult, ScanInventory, SortMode,
-    StageState, WindowPreferences, WindowSizePreset,
+    ActionKind, ActionOutcome, ActionPrefs, ActionResult, AssetStatus, CacheConfig, ContextAction,
+    FehLaunchEntry, FehLaunchList, Filter, FitMode, ImageEntry, ImageOperation, ListViewMode,
+    OutputPolicy, PreparedFastSet, ProcessedResult, ScanInventory, SortMode, StageState,
+    WindowPreferences, WindowSizePreset,
 };
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, apply_converted_detection, apply_rename_pairs,
     build_entry_filelist, clamp_window_size, cleanup_stale_handoffs, collision_suffixed_path,
-    compute_output_path,
-    copy_image_to_clipboard, crop_preview_pixels,
-    EntryLaunchState,
-    default_tree_expanded, entry_is_launchable, execute_move_plan, expand_rename_pattern,
-    feh_filelist_temp_path,
-    feh_entry_filelist_path, feh_missing_status, feh_not_installed_launch_status,
-    file_name_display, file_status_label, format_action_outcome, handoff_path, load_action_prefs,
-    prepare_fast_work_dir,
-    finalize_scan_entries_fast,
-    folder_line_suffix, folder_tree_display_name, format_image_tools_log, format_inventory_bar,
+    compute_output_path, copy_image_to_clipboard, crop_preview_pixels, default_tree_expanded,
+    entry_is_launchable, execute_move_plan, expand_rename_pattern, feh_entry_filelist_path,
+    feh_filelist_temp_path, feh_missing_status, feh_not_installed_launch_status, file_name_display,
+    file_status_label, finalize_scan_entries_fast, folder_line_suffix, folder_tree_display_name,
+    format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
     inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
-    list_view_mode_label, load_launch_list, load_window_prefs, plan_loss_proof_move,
-    post_scan_status,
-    refresh_entry_and_inventory, relative_folder, save_action_prefs, save_copy_to,
-    save_launch_list, save_window_prefs,
-    scan_magick_enabled, showing_count_label, validate_handoff, viewer_profile_dir,
-    viewer_spawn_command,
-    sort_mode_label, spawn_job, tree_file_glyph, tree_visible_rows, window_preset_dimensions,
-    window_preset_label, write_feh_filelist, write_feh_filelist_to, JobMsg, TreeRow, TreeRowKind,
-    FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM, WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
+    list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
+    plan_loss_proof_move, post_scan_status, prepare_fast_work_dir, refresh_entry_and_inventory,
+    relative_folder, save_action_prefs, save_copy_to, save_launch_list, save_window_prefs,
+    scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
+    tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
+    window_preset_dimensions, window_preset_label, write_feh_filelist, write_feh_filelist_to,
+    EntryLaunchState, JobMsg, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM,
+    WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -4000,7 +3994,8 @@ impl RustFehApp {
         let viewer_id = self.next_viewer_id;
         let handoff = handoff_path(std::process::id(), viewer_id);
         let profile_dir = viewer_profile_dir();
-        let (program, args, envs) = viewer_spawn_command(list_path, start_at, &handoff, &profile_dir);
+        let (program, args, envs) =
+            viewer_spawn_command(list_path, start_at, &handoff, &profile_dir);
 
         let mut cmd = Command::new(&program);
         cmd.args(&args);
@@ -4090,7 +4085,9 @@ impl RustFehApp {
         self.selected = Some(path.to_path_buf());
         self.pending_scroll_path = Some(path.to_path_buf());
         let (_, indices) = self.compute_list_indices();
-        let in_filter = indices.iter().any(|&i| self.images[i].path.as_path() == path);
+        let in_filter = indices
+            .iter()
+            .any(|&i| self.images[i].path.as_path() == path);
         let name = file_name_display(path);
         if in_filter {
             self.status = format!("Round trip landed on {name}");
@@ -4100,5 +4097,4 @@ impl RustFehApp {
                 format!("Round trip landed on {name} — cleared the active filter to show it");
         }
     }
-
 }
