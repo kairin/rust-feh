@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/006-window-viewer-stability/plan.md
+at specs/016-feh-viewer-actions/plan.md
 <!-- SPECKIT END -->
