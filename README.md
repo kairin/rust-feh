@@ -184,7 +184,8 @@ Then you can run `./rust-feh` from the root.
 - **Filter & sort**: in **Inspector → Browse**; Path / Name / Folder sort with scroll reset
 - Choose folder (**Browse** or File menu); native formats (jpg, png, webp, gif, bmp) plus optional ImageMagick identify for unlisted types
 - Select image in list; first image auto-selected on load — **feh does not auto-launch**
-- **Open in feh** and **Quick resize** in **Inspector → Image actions** (filelist across filtered list for feh)
+- **Open in feh** and **Quick resize** in **Inspector → Image actions** (filelist across filtered list for feh) — **Open in feh** is a round-trip: browse in feh, and closing it stages the image you were on back in rust-feh, ready for the right-click actions below
+- **Stage pane + context menu** (feature 016): the current selection is displayed in a stage pane below the list (fit-to-pane, lazy off-thread decode); right-click it for save a copy…, move to…, resize copy, convert format, copy path, or copy image — no need to visit the Image Tools panel for a quick resize/convert
 - Graceful degradation when `feh` is missing (disabled buttons, clear status message)
 - Quick resize demo (50%, powered by the `image` crate; `*_processed.*` tracked in inventory)
 - **Dependencies** + **Format discovery** in Inspector: PATH status, install hints, per-format routing
