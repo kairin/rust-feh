@@ -91,7 +91,8 @@ _Updated 2026-07-05 — records maintainer-arbitrated outcomes from the backlog 
 4. ~~002~~ — **closed, superseded by 009**; ~~004~~ — **closed, absorbed by 011** (Clarifications recorded 2026-07-05)
 5. Integration workstreams (class C, briefs in `.agents/briefs/`):
    a. ~~caption/TagForge~~ — **specified as [015](./015-caption-tool-integration/spec.md), then DEFERRED** (maintainer, 2026-07-05: upstream prerequisites — local batch mode, LICENSE/tag)
-   b. image-tools/imtools external-tool integration (likely **016**) — not yet specified
+   b. **[016-feh-viewer-actions](./016-feh-viewer-actions/spec.md)** — in-viewer image actions (maintainer priority 2026-07-05, from manual-use feedback) — **specified, next to plan**
+   c. image-tools/imtools external-tool integration (likely **017**) — not yet specified
 6. **Deferred by maintainer (2026-07-05)**: keyboard navigation; full config persistence — queued after the integration workstreams
 7. Residual manual clicks in 001 (V5 toggle, V6 debug-log, V3 step 4, V8 step 5) — pending maintainer choice: Xvfb session / 2-min manual run / waiver (notes in `001/tasks.md`)
 
