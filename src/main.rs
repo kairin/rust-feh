@@ -3956,8 +3956,10 @@ impl RustFehApp {
     /// Open the current filtered list in a round-trip feh viewer (feature 016,
     /// US2): rust-feh retains the `Child`, and when the user closes it, the
     /// image they landed on is selected and staged back in rust-feh. Other
-    /// feh launches (Launch All, per-entry, wallpaper) are unaffected and
-    /// keep using `spawn_feh_viewer` (fire-and-forget, unchanged — US3/T021).
+    /// feh launches (`launch_entry_feh`/Launch All, `open_feh_on_prepared_fast`)
+    /// are unaffected and keep using `spawn_feh_viewer` (fire-and-forget,
+    /// byte-identical to pre-feature behavior — US3/T021; this codebase has no
+    /// wallpaper `--bg-fill` spawn site yet, so there's nothing to verify there).
     fn open_in_feh(&mut self, path: &Path) {
         let (_, indices) = self.compute_list_indices();
         if indices.is_empty() {
