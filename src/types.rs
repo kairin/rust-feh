@@ -35,7 +35,11 @@ impl ScanInventory {
         entries.iter().filter(|e| e.status == status).count()
     }
 
-    pub fn from_entries(entries: &[ImageEntry], non_image_skipped: usize, magick_truncated: bool) -> Self {
+    pub fn from_entries(
+        entries: &[ImageEntry],
+        non_image_skipped: usize,
+        magick_truncated: bool,
+    ) -> Self {
         let native_listed = Self::count_status(entries, FileStatus::NativeListed);
         let converted = Self::count_status(entries, FileStatus::Converted);
         let awaiting_convert = Self::count_status(entries, FileStatus::MagickDetected);
@@ -273,4 +277,140 @@ pub enum AssetStatus {
     Regular,
     Optimized, // from Prepare Fast feh
     Processed, // from tools
+}
+
+/// State of the stage-pane decode for the current selection (feature 016).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StageState {
+    Loading,
+    Ready { width: u32, height: u32 },
+    Failed { reason: String },
+}
+
+/// The image currently displayed in the rust-feh stage pane (feature 016).
+/// Always mirrors the current selection; `generation` tags decode jobs so only
+/// the latest selection's result is ever applied (stale decodes are discarded).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedImage {
+    pub path: std::path::PathBuf,
+    pub state: StageState,
+    pub generation: u64,
+}
+
+/// A context-menu action available on the staged image (feature 016, FR-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextAction {
+    SaveCopyTo,
+    MoveTo,
+    ResizeCopy,
+    ConvertFormat,
+    CopyPath,
+    CopyImage,
+}
+
+/// What produced an `ActionOutcome`: a context-menu action, or a viewer round-trip (feature 016).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionKind {
+    Context(ContextAction),
+    RoundTrip,
+}
+
+/// Outcome of one action/round-trip (feature 016, FR-010).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionResult {
+    Ok {
+        produced: Option<std::path::PathBuf>,
+    },
+    Err {
+        reason: String,
+    },
+}
+
+/// Activity-log record for every context action and every round-trip (feature 016, FR-010).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionOutcome {
+    pub action: ActionKind,
+    pub image: std::path::PathBuf,
+    pub destination: Option<std::path::PathBuf>,
+    pub result: ActionResult,
+}
+
+/// Persisted last-used destination for save-copy/move folder choosers (feature 016, FR-003).
+/// `~/.config/rust-feh/action-prefs.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionPrefs {
+    pub version: u32,
+    pub last_destination: Option<std::path::PathBuf>,
+}
+
+impl Default for ActionPrefs {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            last_destination: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_prefs_default_has_no_destination() {
+        let prefs = ActionPrefs::default();
+        assert_eq!(prefs.version, 1);
+        assert!(prefs.last_destination.is_none());
+    }
+
+    #[test]
+    fn action_prefs_serde_round_trip() {
+        let original = ActionPrefs {
+            version: 1,
+            last_destination: Some(std::path::PathBuf::from("/tmp/x")),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let deserialized: ActionPrefs = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn context_action_variants_are_distinct() {
+        assert_ne!(ContextAction::SaveCopyTo, ContextAction::MoveTo);
+        assert_ne!(ContextAction::ResizeCopy, ContextAction::ConvertFormat);
+        assert_ne!(ContextAction::CopyPath, ContextAction::CopyImage);
+    }
+
+    #[test]
+    fn action_outcome_ok_and_err_construct() {
+        let ok_outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: std::path::PathBuf::from("/tmp/img.jpg"),
+            destination: Some(std::path::PathBuf::from("/tmp/dest")),
+            result: ActionResult::Ok {
+                produced: Some(std::path::PathBuf::from("/tmp/dest/img.jpg")),
+            },
+        };
+
+        let err_outcome = ActionOutcome {
+            action: ActionKind::RoundTrip,
+            image: std::path::PathBuf::from("/tmp/img.jpg"),
+            destination: None,
+            result: ActionResult::Err {
+                reason: "decode failed".into(),
+            },
+        };
+
+        let ok_outcome_2 = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: std::path::PathBuf::from("/tmp/img.jpg"),
+            destination: Some(std::path::PathBuf::from("/tmp/dest")),
+            result: ActionResult::Ok {
+                produced: Some(std::path::PathBuf::from("/tmp/dest/img.jpg")),
+            },
+        };
+
+        assert_eq!(ok_outcome, ok_outcome_2);
+        assert_ne!(ok_outcome, err_outcome);
+    }
 }

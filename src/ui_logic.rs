@@ -2,7 +2,7 @@
 //! Pure UI/business logic testable without egui (feature 001 validation).
 
 use crate::types::{
-    AssetStatus, FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode,
+    ActionPrefs, AssetStatus, FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode,
     OutputPolicy, ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -93,8 +93,12 @@ pub fn save_launch_list(list: &FehLaunchList) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Invalid launch-list path: {}", path.display()));
     };
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create config directory {}: {e}",
+            parent.display()
+        )
+    })?;
     let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let data = serde_json::to_vec_pretty(list)
         .map_err(|e| format!("Failed to serialize launch entries: {e}"))?;
@@ -141,8 +145,12 @@ pub fn save_window_prefs(prefs: &WindowPreferences) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Invalid window-prefs path: {}", path.display()));
     };
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create config directory {}: {e}",
+            parent.display()
+        )
+    })?;
     let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let data = serde_json::to_vec_pretty(prefs)
         .map_err(|e| format!("Failed to serialize window preferences: {e}"))?;
@@ -173,6 +181,58 @@ pub fn load_window_prefs() -> WindowPreferences {
     }
 }
 
+/// Persistence location for action preferences (feature 016, FR-003).
+pub fn action_prefs_path() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(".config")
+        .join("rust-feh")
+        .join("action-prefs.json")
+}
+
+/// Persist action preferences using a temp-file + rename write.
+pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
+    let path = action_prefs_path();
+    let Some(parent) = path.parent() else {
+        return Err(format!("Invalid action-prefs path: {}", path.display()));
+    };
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create config directory {}: {e}",
+            parent.display()
+        )
+    })?;
+    let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let data = serde_json::to_vec_pretty(prefs)
+        .map_err(|e| format!("Failed to serialize action preferences: {e}"))?;
+    std::fs::write(&temp, data)
+        .map_err(|e| format!("Failed to write action preferences {}: {e}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Failed to save action preferences {}: {e}", path.display())
+    })?;
+    Ok(())
+}
+
+/// Load action preferences; missing or corrupt files recover to defaults.
+pub fn load_action_prefs() -> ActionPrefs {
+    let path = action_prefs_path();
+    let Ok(data) = std::fs::read(&path) else {
+        return ActionPrefs::default();
+    };
+    match serde_json::from_slice(&data) {
+        Ok(prefs) => prefs,
+        Err(e) => {
+            eprintln!(
+                "[rust-feh] warning: corrupt action-prefs.json at {}: {e}; using defaults",
+                path.display()
+            );
+            ActionPrefs::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryLaunchState {
     pub launchable: bool,
@@ -181,8 +241,7 @@ pub struct EntryLaunchState {
 
 /// Decode full image bytes to native-dimension RGBA8 pixels for clipboard copy.
 pub fn decode_image_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| format!("Failed to decode image: {e}"))?;
+    let img = image::load_from_memory(bytes).map_err(|e| format!("Failed to decode image: {e}"))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok((width, height, rgba.into_raw()))
@@ -192,8 +251,8 @@ pub fn decode_image_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String>
 pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read image: {e}"))?;
     let (width, height, rgba) = decode_image_to_rgba(&bytes)?;
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|e| format!("Clipboard unavailable: {e}"))?;
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| format!("Clipboard unavailable: {e}"))?;
     let image = arboard::ImageData {
         width: width as usize,
         height: height as usize,
@@ -204,9 +263,7 @@ pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
         .map_err(|e| format!("Clipboard copy failed: {e}"))?;
     Ok(format!(
         "Copied image to clipboard: {}",
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+        path.file_name().unwrap_or_default().to_string_lossy()
     ))
 }
 
@@ -276,7 +333,9 @@ pub fn entry_is_launchable(
 }
 
 /// Write one absolute path per line for feh `--filelist`.
-pub fn write_feh_filelist(paths: impl IntoIterator<Item = impl AsRef<Path>>) -> std::io::Result<usize> {
+pub fn write_feh_filelist(
+    paths: impl IntoIterator<Item = impl AsRef<Path>>,
+) -> std::io::Result<usize> {
     write_feh_filelist_to(feh_filelist_temp_path(), paths)
 }
 
@@ -302,10 +361,7 @@ pub fn write_feh_filelist_to(
 /// GVFS/SMB/NFS paths are slow for per-file subprocess identify during scan.
 pub fn is_network_mount_path(path: &Path) -> bool {
     let s = path.display().to_string();
-    s.contains("/gvfs/")
-        || s.contains("smb-share:")
-        || s.contains("/nfs/")
-        || s.starts_with("//")
+    s.contains("/gvfs/") || s.contains("smb-share:") || s.contains("/nfs/") || s.starts_with("//")
 }
 
 /// Whether ImageMagick identify may run during directory scan (FR-001 / network policy).
@@ -408,9 +464,7 @@ pub fn list_indices(
     sort: SortMode,
 ) -> Vec<usize> {
     let mut indices = filter_indices(images, root, search);
-    indices.sort_by(|&a, &b| {
-        sort_key(images, a, sort, root).cmp(&sort_key(images, b, sort, root))
-    });
+    indices.sort_by(|&a, &b| sort_key(images, a, sort, root).cmp(&sort_key(images, b, sort, root)));
     indices
 }
 
@@ -469,7 +523,10 @@ pub fn format_inventory_bar(inv: &ScanInventory, root_label: &str) -> Vec<String
             "Converted (processed output exists) ..... {}",
             inv.converted
         ),
-        format!("Awaiting convert ....................... {}", inv.awaiting_convert),
+        format!(
+            "Awaiting convert ....................... {}",
+            inv.awaiting_convert
+        ),
         format!(
             "Non-image files skipped ............... {}",
             inv.non_image_skipped
@@ -763,7 +820,10 @@ pub fn add_or_update_asset_in_inventory(
 }
 
 /// Root tree folder listed count should match inventory native_listed (SC-005).
-pub fn tree_root_listed_matches_inventory(tree: &FolderTreeNode, inventory: &ScanInventory) -> bool {
+pub fn tree_root_listed_matches_inventory(
+    tree: &FolderTreeNode,
+    inventory: &ScanInventory,
+) -> bool {
     tree.relative_path == "." && tree.listed_count == inventory.native_listed
 }
 
@@ -807,17 +867,16 @@ pub fn compute_output_path(
     policy: &OutputPolicy,
 ) -> Result<PathBuf, String> {
     let parent = source.parent().unwrap_or(Path::new("."));
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
     let ext = ext.trim_start_matches('.');
     match policy {
         OutputPolicy::NewSubfolder { name } => {
             let dir = parent.join(name);
             Ok(dir.join(format!("{stem}{stem_suffix}.{ext}")))
         }
-        OutputPolicy::SuffixedSibling { suffix } => Ok(parent.join(format!("{stem}{suffix}.{ext}"))),
+        OutputPolicy::SuffixedSibling { suffix } => {
+            Ok(parent.join(format!("{stem}{suffix}.{ext}")))
+        }
         OutputPolicy::InPlaceWithBackup { .. } => {
             let orig_ext = source
                 .extension()
@@ -835,7 +894,11 @@ pub struct CropPreviewPixels {
     pub rgba: Vec<u8>,
 }
 
-pub fn crop_preview_pixels(source: &Path, geometry: &str, max_dim: u32) -> Result<CropPreviewPixels, String> {
+pub fn crop_preview_pixels(
+    source: &Path,
+    geometry: &str,
+    max_dim: u32,
+) -> Result<CropPreviewPixels, String> {
     use crate::image_proc::parse_crop_geometry;
     let rect = parse_crop_geometry(geometry)?;
     let img = image::open(source).map_err(|e| e.to_string())?;
@@ -887,10 +950,7 @@ pub fn expand_rename_pattern(
 }
 
 fn expand_one_rename_token(pattern: &str, source: &Path, counter: u32) -> Result<String, String> {
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
     let ext = source
         .extension()
         .map(|e| e.to_string_lossy().into_owned())
@@ -970,7 +1030,9 @@ fn is_leap(y: u32) -> bool {
 }
 
 /// Aggregate per-item batch results into a summary (for UI + tests).
-pub fn aggregate_batch_results(results: &[Result<ProcessedResult, String>]) -> crate::image_proc::BatchSummary {
+pub fn aggregate_batch_results(
+    results: &[Result<ProcessedResult, String>],
+) -> crate::image_proc::BatchSummary {
     let total = results.len();
     let succeeded = results.iter().filter(|r| r.is_ok()).count();
     let failed = total.saturating_sub(succeeded);
@@ -1015,7 +1077,11 @@ pub fn apply_rename_pairs(pairs: &[(PathBuf, String)]) -> RenameApplyOutcome {
 }
 
 pub fn format_image_tools_log(result: &ProcessedResult) -> String {
-    let hit = if result.was_cache_hit { " [cache hit]" } else { "" };
+    let hit = if result.was_cache_hit {
+        " [cache hit]"
+    } else {
+        ""
+    };
     format!(
         "Image tools: {:?} {} -> {}{}",
         result.operation,
@@ -1078,14 +1144,77 @@ where
     rx
 }
 
+/// Find a free path in dest_dir for file_name, handling collisions with numeric suffixes.
+/// If the path doesn't exist, return it unchanged. Otherwise return name-1, name-2, etc.,
+/// filling gaps (e.g. if name and name-1 exist but name-2 doesn't, return name-2).
+/// Handles dotfiles and files with/without extensions correctly.
+pub fn collision_suffixed_path(dest_dir: &Path, file_name: &str) -> PathBuf {
+    let target = dest_dir.join(file_name);
+    if !target.exists() {
+        return target;
+    }
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.to_string());
+    let ext = Path::new(file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned());
+
+    let mut suffix = 1u32;
+    loop {
+        let new_name = if let Some(ref e) = ext {
+            format!("{stem}-{suffix}.{e}")
+        } else {
+            format!("{stem}-{suffix}")
+        };
+        let candidate = dest_dir.join(&new_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// Compute output dimensions for downscaling an image to fit max_edge.
+/// Preserves aspect ratio and never upscales. Guards against zero inputs.
+pub fn stage_decode_bounds(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
+    if w == 0 || h == 0 || max_edge == 0 {
+        return (w, h);
+    }
+
+    let longest = w.max(h);
+    if longest <= max_edge {
+        return (w, h);
+    }
+
+    let scale = max_edge as f32 / longest as f32;
+    let new_w = ((w as f32 * scale).round().max(1.0)) as u32;
+    let new_h = ((h as f32 * scale).round().max(1.0)) as u32;
+    (new_w, new_h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     fn entry(path: &str) -> ImageEntry {
         ImageEntry::new(PathBuf::from(path))
     }
+
+    /// `action_prefs_path()` resolves to one fixed real path (`~/.config/rust-feh/
+    /// action-prefs.json`); the three `action_prefs_*` tests below read/write it
+    /// directly and must not interleave under cargo's parallel test threads.
+    static ACTION_PREFS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `feh_filelist_temp_path()` is a single pid-scoped path shared by every test
+    /// in this process; the two tests below both write/read it directly and must
+    /// not interleave under cargo's parallel test threads (pre-existing latent
+    /// flake, tightened while touching this file for feature 016).
+    static FEH_FILELIST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn post_scan_appends_feh_warning_when_unavailable() {
@@ -1154,6 +1283,7 @@ mod tests {
 
     #[test]
     fn feh_filelist_order_matches_list_indices_sorts() {
+        let _guard = FEH_FILELIST_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = Path::new("/data");
         let images = vec![
             entry("/data/b/z.jpg"),
@@ -1162,20 +1292,12 @@ mod tests {
         ];
         for sort in [SortMode::Path, SortMode::Name, SortMode::Folder] {
             let indices = list_indices(&images, Some(root), "", sort);
-            let ordered: Vec<PathBuf> = indices
-                .iter()
-                .map(|&i| images[i].path.clone())
-                .collect();
+            let ordered: Vec<PathBuf> = indices.iter().map(|&i| images[i].path.clone()).collect();
             let _ = std::fs::remove_file(feh_filelist_temp_path());
             write_feh_filelist(&ordered).unwrap();
             let body = std::fs::read_to_string(feh_filelist_temp_path()).unwrap();
             let lines: Vec<&str> = body.lines().collect();
-            assert_eq!(
-                lines.len(),
-                ordered.len(),
-                "sort {:?} line count",
-                sort
-            );
+            assert_eq!(lines.len(), ordered.len(), "sort {:?} line count", sort);
             for (line, path) in lines.iter().zip(ordered.iter()) {
                 assert_eq!(*line, path.display().to_string());
             }
@@ -1185,6 +1307,7 @@ mod tests {
 
     #[test]
     fn write_feh_filelist_one_path_per_line() {
+        let _guard = FEH_FILELIST_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join("rust-feh-filelist-test");
         let _ = std::fs::remove_file(feh_filelist_temp_path());
         let a = dir.join("a.jpg");
@@ -1223,10 +1346,7 @@ mod tests {
     #[test]
     fn join_activity_log_empty_and_lines() {
         assert_eq!(join_activity_log(&[]), "(no activity yet)");
-        assert_eq!(
-            join_activity_log(&["a".into(), "b".into()]),
-            "a\nb"
-        );
+        assert_eq!(join_activity_log(&["a".into(), "b".into()]), "a\nb");
     }
 
     #[test]
@@ -1382,10 +1502,7 @@ mod tests {
         let images = vec![
             entry("/data/a.jpg"),
             entry("/data/b.png"),
-            ImageEntry::with_status(
-                PathBuf::from("/data/c.jpg"),
-                FileStatus::Converted,
-            ),
+            ImageEntry::with_status(PathBuf::from("/data/c.jpg"), FileStatus::Converted),
         ];
         let indices = vec![0, 1, 2];
         let tree = build_folder_tree(&images, Some(root), &indices);
@@ -1417,5 +1534,176 @@ mod tests {
             super::window_preset_dimensions(WindowSizePreset::Large),
             (1280.0, 960.0)
         );
+    }
+
+    #[test]
+    fn collision_suffixed_path_no_collision_returns_unchanged() {
+        let dir = std::env::temp_dir().join("rust-feh-collision-test-1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = collision_suffixed_path(&dir, "photo.jpg");
+        assert_eq!(result, dir.join("photo.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_existing_name_gets_dash_one() {
+        let dir = std::env::temp_dir().join("rust-feh-collision-test-2");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "photo.jpg");
+        assert_eq!(result, dir.join("photo-1.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_fills_gap() {
+        let dir = std::env::temp_dir().join("rust-feh-collision-test-3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        std::fs::write(dir.join("photo-1.jpg"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "photo.jpg");
+        assert_eq!(result, dir.join("photo-2.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_dotfile_no_extension_split() {
+        let dir = std::env::temp_dir().join("rust-feh-collision-test-4");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".bashrc"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, ".bashrc");
+        assert_eq!(result, dir.join(".bashrc-1"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_no_extension() {
+        let dir = std::env::temp_dir().join("rust-feh-collision-test-5");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "README");
+        assert_eq!(result, dir.join("README-1"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_non_ascii() {
+        let dir = std::env::temp_dir().join("rust-feh-collision-test-6");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("café-été.jpg"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "café-été.jpg");
+        assert_eq!(result, dir.join("café-été-1.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_decode_bounds_landscape_downscales() {
+        assert_eq!(stage_decode_bounds(4000, 2000, 2000), (2000, 1000));
+    }
+
+    #[test]
+    fn stage_decode_bounds_portrait_downscales() {
+        assert_eq!(stage_decode_bounds(2000, 4000, 2000), (1000, 2000));
+    }
+
+    #[test]
+    fn stage_decode_bounds_small_image_no_upscale() {
+        assert_eq!(stage_decode_bounds(400, 300, 2048), (400, 300));
+    }
+
+    #[test]
+    fn stage_decode_bounds_exact_edge_no_upscale() {
+        assert_eq!(stage_decode_bounds(2048, 1024, 2048), (2048, 1024));
+    }
+
+    #[test]
+    fn stage_decode_bounds_zero_guards() {
+        assert_eq!(stage_decode_bounds(0, 100, 2048), (0, 100));
+        assert_eq!(stage_decode_bounds(100, 100, 0), (100, 100));
+        assert_eq!(stage_decode_bounds(100, 0, 2048), (100, 0));
+    }
+
+    #[test]
+    fn action_prefs_round_trip_save_and_load() {
+        let _guard = ACTION_PREFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = action_prefs_path();
+        // Save original if it exists
+        let original_backup = std::fs::read(&path).ok();
+
+        // Remove the file if it exists to start fresh
+        let _ = std::fs::remove_file(&path);
+
+        // Create and save test prefs
+        let test_prefs = ActionPrefs {
+            version: 1,
+            last_destination: Some(PathBuf::from("/tmp/some/dir")),
+        };
+
+        save_action_prefs(&test_prefs).expect("save should succeed");
+
+        // Load it back
+        let loaded = load_action_prefs();
+
+        // Verify round-trip equality
+        assert_eq!(loaded, test_prefs);
+
+        // Restore original or clean up
+        let _ = std::fs::remove_file(&path);
+        if let Some(backup_data) = original_backup {
+            let _ = std::fs::write(&path, backup_data);
+        }
+    }
+
+    #[test]
+    fn action_prefs_missing_file_returns_default() {
+        let _guard = ACTION_PREFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = action_prefs_path();
+        // Save original if it exists
+        let original_backup = std::fs::read(&path).ok();
+
+        // Remove the file if it exists so path is absent
+        let _ = std::fs::remove_file(&path);
+
+        // Load should return default
+        let loaded = load_action_prefs();
+        assert_eq!(loaded, ActionPrefs::default());
+
+        // Restore original or clean up
+        let _ = std::fs::remove_file(&path);
+        if let Some(backup_data) = original_backup {
+            let _ = std::fs::write(&path, backup_data);
+        }
+    }
+
+    #[test]
+    fn action_prefs_corrupt_json_recovers_to_default() {
+        let _guard = ACTION_PREFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = action_prefs_path();
+        // Save original if it exists
+        let original_backup = std::fs::read(&path).ok();
+
+        // Create parent dirs if needed
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Write garbage bytes (not valid JSON)
+        std::fs::write(&path, b"not valid json garbage{").expect("write garbage");
+
+        // Load should return default and log warning
+        let loaded = load_action_prefs();
+        assert_eq!(loaded, ActionPrefs::default());
+
+        // Restore original or clean up
+        let _ = std::fs::remove_file(&path);
+        if let Some(backup_data) = original_backup {
+            let _ = std::fs::write(&path, backup_data);
+        }
     }
 }

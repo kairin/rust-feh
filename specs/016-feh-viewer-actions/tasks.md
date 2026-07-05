@@ -9,13 +9,13 @@ Tests for core-module logic are mandatory (Constitution: Testing).
 
 ## Phase 1: Setup & Foundational Types
 
-- [ ] T001 Baseline green: `cargo check && cargo test` on branch tip; record counts here
-- [ ] T002 [P] Add types in `src/types.rs`: `StageState`, `StagedImage`, `ContextAction`, `ActionOutcome`, `ActionPrefs` (version-tagged, serde) per data-model.md
-- [ ] T003 [P] `src/ui_logic.rs`: `collision_suffixed_path(dest_dir, file_name)` + unit tests (existing name, gaps, dotfiles, no-extension, non-ASCII)
-- [ ] T004 [P] `src/ui_logic.rs`: `stage_decode_bounds(w, h, max_edge)` + unit tests (portrait/landscape/small-no-upscale/zero guards)
-- [ ] T005 `src/ui_logic.rs`: `action_prefs_path()` / `save_action_prefs` / `load_action_prefs` mirroring window-prefs pattern + unit tests (missing file, bad json, round-trip)
+- [x] T001 Baseline green: `cargo check && cargo test` on branch tip; record counts here — 2026-07-05: `cargo check` clean; `cargo test` 122 passed / 0 failed / 2 ignored (matches `.agents/ENV.md` B-4 baseline) at commit 186139c.
+- [x] T002 [P] Add types in `src/types.rs`: `StageState`, `StagedImage`, `ContextAction`, `ActionOutcome`, `ActionPrefs` (version-tagged, serde) per data-model.md — 2026-07-05: done via haiku-implementer; also added `ActionKind`/`ActionResult`; 4 new tests green.
+- [x] T003 [P] `src/ui_logic.rs`: `collision_suffixed_path(dest_dir, file_name)` + unit tests (existing name, gaps, dotfiles, no-extension, non-ASCII) — 2026-07-05: done via haiku-implementer (combined dispatch with T004, same file); 6 tests green.
+- [x] T004 [P] `src/ui_logic.rs`: `stage_decode_bounds(w, h, max_edge)` + unit tests (portrait/landscape/small-no-upscale/zero guards) — 2026-07-05: done via haiku-implementer (combined dispatch with T003); 5 tests green.
+- [x] T005 `src/ui_logic.rs`: `action_prefs_path()` / `save_action_prefs` / `load_action_prefs` mirroring window-prefs pattern + unit tests (missing file, bad json, round-trip) — 2026-07-05: done via haiku-implementer; 3 tests green. Orchestrator fix: the 3 new tests shared one real fixed path (`~/.config/rust-feh/action-prefs.json`) and raced under parallel test threads (observed 1 flaky failure); added a `Mutex`-guarded serialization (`ACTION_PREFS_TEST_LOCK`) around all three — reran `cargo test` 5x clean after the fix.
 
-**Checkpoint**: `cargo test` green; no GUI changes yet.
+**Checkpoint**: `cargo test` green (157 passed / 0 failed / 2 ignored across all suites, reran 3x for stability) — 2026-07-05.
 
 ## Phase 2: User Story 1 — Stage pane + context actions (P1)
 
