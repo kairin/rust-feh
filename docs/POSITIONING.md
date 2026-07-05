@@ -17,6 +17,13 @@ It is **not** a port of nfeh. It is a from-scratch Rust rewrite that shares the 
 ## What rust-feh is not
 
 - **Not a feh replacement** — viewing and wallpaper stay in feh (constitution §I).
+- **Not a viewer replacement, even with the selection stage** (feature 016) — the
+  stage pane shows only the current selection, scaled to fit, so triage
+  decisions (save/move/resize/convert/copy) happen without leaving rust-feh.
+  It is not a zoom workbench, slideshow, or editor: cycling through many
+  images, zooming, and navigating remain feh's job via the round-trip
+  (launch feh, browse, close it, land back in rust-feh on the image you
+  stopped on). Stage pane ≠ viewer replacement; feh remains the viewer engine.
 - **Not an image editor** — resize/convert are lightweight helpers; full tools dialog not implemented.
 - **Not an Electron thumbnail picker** — no in-app preview grid today (not implemented).
 - **Not ImageMagick-dependent** — magick/convert is optional; the `image` crate covers common formats in-process.

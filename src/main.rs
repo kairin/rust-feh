@@ -3,30 +3,32 @@
 // All original nfeh / old maintainer code and traces have been archived (see archive/original-nfeh/).
 
 use eframe::{egui, App, Frame};
-use rust_feh::image_proc::{process_image, ImageToolsService, ProcessOptions};
+use rust_feh::image_proc::{decode_stage_rgba, process_image, ImageToolsService, ProcessOptions};
 use rust_feh::scanner::{scan_images_streaming, ScanResult};
 use rust_feh::tool_caps::{feh_spawn_unavailable, DepKind, FormatRoute, ToolCapabilities};
 use rust_feh::types::{
-    AssetStatus, CacheConfig, FehLaunchEntry, FehLaunchList, FitMode, Filter, ImageEntry,
-    ImageOperation, ListViewMode, OutputPolicy, PreparedFastSet, ProcessedResult, ScanInventory,
-    SortMode, WindowPreferences, WindowSizePreset,
+    ActionKind, ActionOutcome, ActionPrefs, ActionResult, AssetStatus, CacheConfig, ContextAction,
+    FehLaunchEntry, FehLaunchList, Filter, FitMode, ImageEntry, ImageOperation, ListViewMode,
+    OutputPolicy, PreparedFastSet, ProcessedResult, ScanInventory, SortMode, StageState,
+    WindowPreferences, WindowSizePreset,
 };
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, apply_converted_detection, apply_rename_pairs,
-    build_entry_filelist, clamp_window_size, copy_image_to_clipboard, crop_preview_pixels,
-    EntryLaunchState,
-    default_tree_expanded, entry_is_launchable, expand_rename_pattern, feh_filelist_temp_path,
-    feh_entry_filelist_path, feh_missing_status, feh_not_installed_launch_status,
-    file_name_display, file_status_label, prepare_fast_work_dir,
-    finalize_scan_entries_fast,
-    folder_line_suffix, folder_tree_display_name, format_image_tools_log, format_inventory_bar,
+    build_entry_filelist, clamp_window_size, cleanup_stale_handoffs, collision_suffixed_path,
+    compute_output_path, copy_image_to_clipboard, crop_preview_pixels, default_tree_expanded,
+    entry_is_launchable, execute_move_plan, expand_rename_pattern, feh_entry_filelist_path,
+    feh_filelist_temp_path, feh_missing_status, feh_not_installed_launch_status, file_name_display,
+    file_status_label, finalize_scan_entries_fast, folder_line_suffix, folder_tree_display_name,
+    format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
     inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
-    list_view_mode_label, load_launch_list, load_window_prefs, post_scan_status,
-    refresh_entry_and_inventory, relative_folder, save_launch_list, save_window_prefs,
-    scan_magick_enabled, showing_count_label,
-    sort_mode_label, spawn_job, tree_file_glyph, tree_visible_rows, window_preset_dimensions,
-    window_preset_label, write_feh_filelist, write_feh_filelist_to, JobMsg, TreeRow, TreeRowKind,
-    FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM, WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
+    list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
+    plan_loss_proof_move, post_scan_status, prepare_fast_work_dir, refresh_entry_and_inventory,
+    relative_folder, save_action_prefs, save_copy_to, save_launch_list, save_window_prefs,
+    scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
+    tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
+    window_preset_dimensions, window_preset_label, write_feh_filelist, write_feh_filelist_to,
+    EntryLaunchState, JobMsg, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM,
+    WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -46,6 +48,10 @@ fn create_rust_feh_app(
     tools_panel_ok: bool,
 ) -> Box<dyn App> {
     let window_prefs = load_window_prefs();
+    // Reap any handoff files orphaned by a prior session's round-trip
+    // viewers that outlived rust-feh (contract: "stale handoff files under
+    // runtime cache are cleaned at next startup").
+    let _ = cleanup_stale_handoffs();
     Box::new(RustFehApp {
         current_dir: None,
         images: vec![],
@@ -100,6 +106,16 @@ fn create_rust_feh_app(
         launch_entries: load_launch_list(),
         selected_tree_folder: None,
         clipboard_context_menu: None,
+        stage_generation: 0,
+        stage_requested_path: None,
+        stage_state: StageState::Loading,
+        stage_rx: None,
+        stage_texture: None,
+        stage_pane_collapsed: false,
+        action_prefs: load_action_prefs(),
+        round_trips: Vec::new(),
+        next_viewer_id: 0,
+        pending_scroll_path: None,
     })
 }
 
@@ -397,6 +413,24 @@ struct RustFehApp {
     format_route_open: HashSet<String>,
     /// Dev/test: auto-load `RUST_FEH_START_FOLDER` once on first frame.
     start_folder_loaded: bool,
+    /// Stage pane (feature 016): current decode job's generation; only the
+    /// latest generation's result is ever applied (stale decodes discarded).
+    stage_generation: u64,
+    /// Path the current/most-recent decode job was kicked off for; compared
+    /// against `selected` each frame to detect a new selection needing decode.
+    stage_requested_path: Option<PathBuf>,
+    stage_state: StageState,
+    stage_rx: Option<Receiver<StageDecodeMsg>>,
+    stage_texture: Option<egui::TextureHandle>,
+    stage_pane_collapsed: bool,
+    action_prefs: ActionPrefs,
+    /// Live round-trip viewers, polled every frame (feature 016, US2).
+    round_trips: Vec<ViewerRoundTrip>,
+    next_viewer_id: u64,
+    /// Set when a round-trip handoff lands on an image; consumed by the flat
+    /// list's render pass to force-scroll to it once (US2 AS1: "list scrolls
+    /// to it").
+    pending_scroll_path: Option<PathBuf>,
 }
 
 enum FehEntryAction {
@@ -431,6 +465,36 @@ enum ScanMsg {
         non_image_skipped: usize,
         magick_truncated: bool,
     },
+}
+
+/// Longest edge (px) for stage-pane decodes (feature 016, R5).
+const STAGE_MAX_EDGE: u32 = 2048;
+
+/// Off-thread stage decode result; stale generations are discarded on receipt.
+enum StageDecodeMsg {
+    Ready {
+        generation: u64,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    Failed {
+        generation: u64,
+        reason: String,
+    },
+}
+
+/// A launched cycling viewer tied to its originating rust-feh state (feature
+/// 016, contracts/viewer-roundtrip.md). Polled once per frame via `try_wait`;
+/// on exit the handoff file is validated and, if accepted, staged. Holds a
+/// live `Child`, which is why this lives in main.rs rather than types.rs
+/// (same precedent as `ActiveToolsJob`, which holds a live `Receiver`).
+struct ViewerRoundTrip {
+    child: std::process::Child,
+    handoff_path: PathBuf,
+    launched_with: PathBuf,
+    filelist: Vec<PathBuf>,
+    viewer_id: u64,
 }
 
 impl Drop for RustFehApp {
@@ -3082,18 +3146,34 @@ impl RustFehApp {
                 ui.strong("Status");
             });
         });
-        egui::ScrollArea::vertical()
+        let mut scroll_area = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .max_height(metrics.list_height)
-            .id_salt(self.scroll_generation)
-            .show_rows(ui, metrics.row_h, filtered.len(), |ui, row_range| {
-                for row in row_range {
-                    if row >= filtered.len() {
-                        break;
-                    }
-                    self.render_flat_list_row(ui, filtered[row], list_root, metrics);
+            .id_salt(self.scroll_generation);
+        if let Some(offset) = self.pending_flat_scroll_offset(filtered, metrics) {
+            scroll_area = scroll_area.vertical_scroll_offset(offset);
+        }
+        scroll_area.show_rows(ui, metrics.row_h, filtered.len(), |ui, row_range| {
+            for row in row_range {
+                if row >= filtered.len() {
+                    break;
                 }
-            });
+                self.render_flat_list_row(ui, filtered[row], list_root, metrics);
+            }
+        });
+    }
+
+    /// One-shot forced scroll offset for a pending round-trip landing (feature
+    /// 016, US2 AS1: "the list scrolls to it"); consumes `pending_scroll_path`
+    /// so it only forces the position once, not every frame.
+    fn pending_flat_scroll_offset(
+        &mut self,
+        filtered: &[usize],
+        metrics: ImageListMetrics,
+    ) -> Option<f32> {
+        let target = self.pending_scroll_path.take()?;
+        let row = filtered.iter().position(|&i| self.images[i].path == target)?;
+        Some((row as f32 * metrics.row_h - metrics.list_height / 2.0).max(0.0))
     }
 
     fn toggle_tree_folder(&mut self, folder_path: &str) {
@@ -3216,8 +3296,10 @@ impl RustFehApp {
                 0.0
             };
             let total_w = ui.available_width();
+            let stage_reserved_h = self.stage_pane_reserved_height();
             let metrics = ImageListMetrics {
-                list_height: (ui.available_height() - header_h - inventory_h).max(row_h * 4.0),
+                list_height: (ui.available_height() - header_h - inventory_h - stage_reserved_h)
+                    .max(row_h * 4.0),
                 folder_col_w: total_w * 0.35,
                 status_col_w: total_w * 0.25,
                 row_h,
@@ -3232,7 +3314,22 @@ impl RustFehApp {
                         self.render_tree_image_list(ui, list_root, metrics.list_height, row_h);
                     }
                 });
+
+            ui.add_space(4.0);
+            self.render_stage_pane(ui);
         });
+    }
+
+    /// Fixed height reserved below the list for the stage pane (feature 016,
+    /// contracts/stage-context-menu.md: "list usability at 10k images is
+    /// unchanged" — the list keeps priority; the stage takes a bounded slice
+    /// of the remaining height, collapsible to a header-only row).
+    fn stage_pane_reserved_height(&self) -> f32 {
+        if self.stage_pane_collapsed {
+            22.0
+        } else {
+            220.0
+        }
     }
 
     fn request_repaint_if_busy(&self, ctx: &egui::Context) {
@@ -3240,6 +3337,379 @@ impl RustFehApp {
         let tip_animating = !self.tool_caps.operation_timings().is_empty();
         if busy || tip_animating {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // --- Stage pane: off-thread decode (feature 016, FR-001/R5) ---
+
+    /// Detect a new selection and kick an off-thread decode job for it,
+    /// tagged with a fresh generation so any in-flight stale job is discarded
+    /// on receipt (contract: "selection changes always win").
+    fn kick_stage_decode_if_selection_changed(&mut self, ctx: &egui::Context) {
+        if self.selected == self.stage_requested_path {
+            return;
+        }
+        self.stage_requested_path = self.selected.clone();
+        self.stage_generation = self.stage_generation.wrapping_add(1);
+        let generation = self.stage_generation;
+        let Some(path) = self.selected.clone() else {
+            self.stage_state = StageState::Failed {
+                reason: "No image selected".to_string(),
+            };
+            self.stage_texture = None;
+            return;
+        };
+        self.stage_state = StageState::Loading;
+        let (tx, rx) = mpsc::channel();
+        self.stage_rx = Some(rx);
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let msg = match decode_stage_rgba(&path, STAGE_MAX_EDGE) {
+                Ok((width, height, rgba)) => StageDecodeMsg::Ready {
+                    generation,
+                    width,
+                    height,
+                    rgba,
+                },
+                Err(reason) => StageDecodeMsg::Failed { generation, reason },
+            };
+            let _ = tx.send(msg);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Apply the latest decode result, if any; stale-generation results are
+    /// silently dropped (a later selection has already superseded them).
+    fn poll_stage_decode(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.stage_rx else {
+            return;
+        };
+        let mut latest = None;
+        while let Ok(msg) = rx.try_recv() {
+            latest = Some(msg);
+        }
+        let Some(msg) = latest else {
+            return;
+        };
+        match msg {
+            StageDecodeMsg::Ready {
+                generation,
+                width,
+                height,
+                rgba,
+            } if generation == self.stage_generation => {
+                let color_image =
+                    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
+                let texture = ctx.load_texture(
+                    format!("stage-{generation}"),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.stage_texture = Some(texture);
+                self.stage_state = StageState::Ready { width, height };
+            }
+            StageDecodeMsg::Failed { generation, reason } if generation == self.stage_generation => {
+                self.stage_texture = None;
+                self.stage_state = StageState::Failed { reason };
+            }
+            _ => {}
+        }
+    }
+
+    // --- Stage pane render + context menu (feature 016, contracts/stage-context-menu.md) ---
+
+    fn render_stage_pane(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let toggle_label = if self.stage_pane_collapsed {
+                "▶ Stage"
+            } else {
+                "▼ Stage"
+            };
+            if ui.small_button(toggle_label).clicked() {
+                self.stage_pane_collapsed = !self.stage_pane_collapsed;
+            }
+            self.render_stage_status_line(ui);
+        });
+        if self.stage_pane_collapsed {
+            return;
+        }
+        self.render_stage_image(ui);
+    }
+
+    fn render_stage_status_line(&self, ui: &mut egui::Ui) {
+        match &self.stage_state {
+            StageState::Loading => {
+                ui.weak("Loading…");
+            }
+            StageState::Failed { reason } => {
+                let name = self
+                    .selected
+                    .as_deref()
+                    .map(file_name_display)
+                    .unwrap_or_default();
+                ui.weak(format!("Cannot preview {name}: {reason}"));
+            }
+            StageState::Ready { width, height } => {
+                ui.weak(format!("{width}×{height}"));
+            }
+        }
+    }
+
+    fn render_stage_image(&mut self, ui: &mut egui::Ui) {
+        let Some(texture) = self.stage_texture.clone() else {
+            return;
+        };
+        let Some(path) = self.selected.clone() else {
+            return;
+        };
+        let avail = ui.available_size();
+        let tex_size = texture.size_vec2();
+        if avail.x <= 0.0 || avail.y <= 0.0 || tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+            return;
+        }
+        // Never upscale beyond 1:1 (contract: "no crop, no upscale beyond 1:1").
+        let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0);
+        let draw_size = tex_size * scale.max(0.01);
+        let response = ui.add(
+            egui::Image::new(&texture)
+                .fit_to_exact_size(draw_size)
+                .sense(egui::Sense::click()),
+        );
+        self.render_stage_context_menu(&response, &path);
+    }
+
+    fn render_stage_context_menu(&mut self, response: &egui::Response, path: &Path) {
+        let decodable = matches!(self.stage_state, StageState::Ready { .. });
+        response.context_menu(|ui| {
+            let ctx = ui.ctx().clone();
+            if ui.button("Save a copy…").clicked() {
+                self.action_save_copy(path);
+                ui.close_menu();
+            }
+            if ui.button("Move to…").clicked() {
+                self.action_move_to(path);
+                ui.close_menu();
+            }
+            if ui
+                .add_enabled(decodable, egui::Button::new("Resize copy"))
+                .clicked()
+            {
+                self.action_resize_copy(path);
+                ui.close_menu();
+            }
+            ui.add_enabled_ui(decodable, |ui| {
+                ui.menu_button("Convert format", |ui| {
+                    for fmt in ["jpg", "png", "webp"] {
+                        if ui.button(fmt).clicked() {
+                            self.action_convert_format(path, fmt);
+                            ui.close_menu();
+                        }
+                    }
+                });
+            });
+            if ui.button("Copy path").clicked() {
+                ctx.copy_text(path.display().to_string());
+                self.record_action_outcome(ContextAction::CopyPath, path, None, Ok(None));
+                ui.close_menu();
+            }
+            if ui
+                .add_enabled(decodable, egui::Button::new("Copy image"))
+                .clicked()
+            {
+                self.action_copy_image(path);
+                ui.close_menu();
+            }
+        });
+    }
+
+    // --- Context actions (feature 016, FR-002..FR-006/FR-010) ---
+
+    fn action_save_copy(&mut self, path: &Path) {
+        let Some(dest_dir) = self.pick_action_destination() else {
+            return;
+        };
+        match save_copy_to(path, &dest_dir) {
+            Ok(produced) => self.record_action_outcome(
+                ContextAction::SaveCopyTo,
+                path,
+                Some(dest_dir),
+                Ok(Some(produced)),
+            ),
+            Err(reason) => {
+                self.record_action_outcome(ContextAction::SaveCopyTo, path, Some(dest_dir), Err(reason))
+            }
+        }
+    }
+
+    fn action_move_to(&mut self, path: &Path) {
+        let Some(dest_dir) = self.pick_action_destination() else {
+            return;
+        };
+        let plan = match plan_loss_proof_move(path, &dest_dir) {
+            Ok(p) => p,
+            Err(reason) => {
+                self.record_action_outcome(ContextAction::MoveTo, path, Some(dest_dir), Err(reason));
+                return;
+            }
+        };
+        match execute_move_plan(&plan) {
+            Ok(produced) => {
+                self.record_action_outcome(
+                    ContextAction::MoveTo,
+                    path,
+                    Some(dest_dir),
+                    Ok(Some(produced)),
+                );
+                self.advance_stage_after_move(path);
+            }
+            Err(reason) => {
+                self.record_action_outcome(ContextAction::MoveTo, path, Some(dest_dir), Err(reason))
+            }
+        }
+    }
+
+    /// Native folder chooser starting at the persisted last destination
+    /// (FR-003); `None` on cancel (no side effects, per edge case).
+    fn pick_action_destination(&mut self) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(dir) = &self.action_prefs.last_destination {
+            dialog = dialog.set_directory(dir);
+        }
+        let dest_dir = dialog.pick_folder()?;
+        self.action_prefs.last_destination = Some(dest_dir.clone());
+        if let Err(e) = save_action_prefs(&self.action_prefs) {
+            self.log(format!("Failed to persist action prefs: {e}"));
+        }
+        Some(dest_dir)
+    }
+
+    fn action_resize_copy(&mut self, path: &Path) {
+        let dest = match Self::derived_action_output_path(path, "_resized", "jpg") {
+            Ok(d) => d,
+            Err(reason) => {
+                self.record_action_outcome(ContextAction::ResizeCopy, path, None, Err(reason));
+                return;
+            }
+        };
+        let opts = ProcessOptions {
+            width: None,
+            height: None,
+            percent: Some(50.0),
+            fit: None,
+            filter: None,
+            target_format: Some("jpg".into()),
+            quality: Some(80),
+            output_path: Some(dest),
+        };
+        self.run_derived_action(ContextAction::ResizeCopy, path, &opts);
+    }
+
+    fn action_convert_format(&mut self, path: &Path, target_format: &str) {
+        let dest = match Self::derived_action_output_path(path, "", target_format) {
+            Ok(d) => d,
+            Err(reason) => {
+                self.record_action_outcome(ContextAction::ConvertFormat, path, None, Err(reason));
+                return;
+            }
+        };
+        let opts = ProcessOptions {
+            width: None,
+            height: None,
+            percent: None,
+            fit: None,
+            filter: None,
+            target_format: Some(target_format.to_string()),
+            quality: Some(85),
+            output_path: Some(dest),
+        };
+        self.run_derived_action(ContextAction::ConvertFormat, path, &opts);
+    }
+
+    /// Collision-safe destination for a derived (resize/convert) output,
+    /// reusing the existing Image Tools "processed" subfolder convention
+    /// (FR-006) plus `collision_suffixed_path` (FR-004).
+    fn derived_action_output_path(source: &Path, stem_suffix: &str, ext: &str) -> Result<PathBuf, String> {
+        let policy = OutputPolicy::NewSubfolder {
+            name: "processed".into(),
+        };
+        let base = compute_output_path(source, stem_suffix, ext, &policy)?;
+        let dir = base.parent().unwrap_or(Path::new(".")).to_path_buf();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create output folder {}: {e}", dir.display()))?;
+        let name = base
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        Ok(collision_suffixed_path(&dir, &name))
+    }
+
+    fn run_derived_action(&mut self, action: ContextAction, path: &Path, opts: &ProcessOptions) {
+        match process_image(path, opts) {
+            Ok(produced) => {
+                add_or_update_asset_in_inventory(
+                    &mut self.images,
+                    produced.clone(),
+                    AssetStatus::Processed,
+                );
+                self.record_action_outcome(action, path, None, Ok(Some(produced)));
+            }
+            Err(reason) => self.record_action_outcome(action, path, None, Err(reason)),
+        }
+    }
+
+    fn action_copy_image(&mut self, path: &Path) {
+        match copy_image_to_clipboard(path) {
+            Ok(_status) => self.record_action_outcome(ContextAction::CopyImage, path, None, Ok(None)),
+            Err(reason) => self.record_action_outcome(ContextAction::CopyImage, path, None, Err(reason)),
+        }
+    }
+
+    /// After a successful move, advance the stage/selection to the next
+    /// surviving image in the filtered list (edge case: never a stale frame).
+    fn advance_stage_after_move(&mut self, moved_path: &Path) {
+        let (_, indices_before) = self.compute_list_indices();
+        let pos = indices_before
+            .iter()
+            .position(|&i| self.images[i].path == moved_path);
+        self.images.retain(|e| e.path != moved_path);
+        let (_, indices_after) = self.compute_list_indices();
+        self.selected = if indices_after.is_empty() {
+            None
+        } else {
+            let next_pos = pos.unwrap_or(0).min(indices_after.len() - 1);
+            Some(self.images[indices_after[next_pos]].path.clone())
+        };
+    }
+
+    /// Log + surface every action outcome (FR-010); failures also raise a
+    /// native error dialog naming the image and cause (SC-007).
+    fn record_action_outcome(
+        &mut self,
+        action: ContextAction,
+        image: &Path,
+        destination: Option<PathBuf>,
+        result: Result<Option<PathBuf>, String>,
+    ) {
+        let is_err = result.is_err();
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(action),
+            image: image.to_path_buf(),
+            destination,
+            result: match result {
+                Ok(produced) => ActionResult::Ok { produced },
+                Err(reason) => ActionResult::Err { reason },
+            },
+        };
+        let line = format_action_outcome(&outcome);
+        self.log(line.clone());
+        self.status = line.clone();
+        if is_err {
+            rfd::MessageDialog::new()
+                .set_title("Action failed")
+                .set_description(&line)
+                .set_level(rfd::MessageLevel::Error)
+                .show();
         }
     }
 }
@@ -3252,6 +3722,9 @@ impl App for RustFehApp {
         self.poll_tools_job(ctx);
         Self::emit_startup_notice_once();
         self.sync_frame_input_state(ctx);
+        self.poll_round_trip_viewers(ctx);
+        self.kick_stage_decode_if_selection_changed(ctx);
+        self.poll_stage_decode(ctx);
 
         self.render_top_menu_bar(ctx);
         self.render_inspector_side_panel(ctx);
@@ -3474,6 +3947,13 @@ impl RustFehApp {
         }
     }
 
+    /// Open the current filtered list in a round-trip feh viewer (feature 016,
+    /// US2): rust-feh retains the `Child`, and when the user closes it, the
+    /// image they landed on is selected and staged back in rust-feh. Other
+    /// feh launches (`launch_entry_feh`/Launch All, `open_feh_on_prepared_fast`)
+    /// are unaffected and keep using `spawn_feh_viewer` (fire-and-forget,
+    /// byte-identical to pre-feature behavior — US3/T021; this codebase has no
+    /// wallpaper `--bg-fill` spawn site yet, so there's nothing to verify there).
     fn open_in_feh(&mut self, path: &Path) {
         let (_, indices) = self.compute_list_indices();
         if indices.is_empty() {
@@ -3485,9 +3965,9 @@ impl RustFehApp {
             return;
         }
 
-        let paths: Vec<&Path> = indices
+        let paths: Vec<PathBuf> = indices
             .iter()
-            .map(|&i| self.images[i].path.as_path())
+            .map(|&i| self.images[i].path.clone())
             .collect();
 
         let list_path = feh_filelist_temp_path();
@@ -3500,12 +3980,121 @@ impl RustFehApp {
             }
         };
 
-        self.spawn_feh_viewer(
-            &list_path,
-            path,
-            format!("Spawning feh with filelist ({count} images)"),
-            format!("Launched feh on {}", path.display()),
-        );
+        self.spawn_round_trip_viewer(&list_path, path, paths, count);
     }
 
+    fn spawn_round_trip_viewer(
+        &mut self,
+        list_path: &Path,
+        start_at: &Path,
+        filelist: Vec<PathBuf>,
+        count: usize,
+    ) {
+        self.next_viewer_id = self.next_viewer_id.wrapping_add(1);
+        let viewer_id = self.next_viewer_id;
+        let handoff = handoff_path(std::process::id(), viewer_id);
+        let profile_dir = viewer_profile_dir();
+        let (program, args, envs) =
+            viewer_spawn_command(list_path, start_at, &handoff, &profile_dir);
+
+        let mut cmd = Command::new(&program);
+        cmd.args(&args);
+        for (key, value) in &envs {
+            cmd.env(key, value);
+        }
+        self.log(format!(
+            "Spawning round-trip feh with filelist ({count} images)"
+        ));
+        match cmd.spawn() {
+            Ok(child) => {
+                self.log(format!(
+                    "feh launched (pid {:?}, round-trip viewer {viewer_id})",
+                    child.id()
+                ));
+                self.status = format!("Launched feh on {}", start_at.display());
+                self.round_trips.push(ViewerRoundTrip {
+                    child,
+                    handoff_path: handoff,
+                    launched_with: start_at.to_path_buf(),
+                    filelist,
+                    viewer_id,
+                });
+            }
+            Err(e) => {
+                self.log(format!("Failed to spawn feh: {e}"));
+                if feh_spawn_unavailable(&e) {
+                    self.mark_feh_unavailable();
+                } else {
+                    self.status = format!("Failed to launch feh (is it installed?): {e}");
+                }
+            }
+        }
+    }
+
+    /// Poll every live round-trip viewer once per frame (contract: "retains
+    /// the Child and polls try_wait() every frame"); any status (success or
+    /// signal) counts as a close and triggers handoff handling.
+    fn poll_round_trip_viewers(&mut self, ctx: &egui::Context) {
+        if self.round_trips.is_empty() {
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        let mut exited_at = Vec::new();
+        for (i, rt) in self.round_trips.iter_mut().enumerate() {
+            if matches!(rt.child.try_wait(), Ok(Some(_))) {
+                exited_at.push(i);
+            }
+        }
+        // Remove back-to-front so earlier indices stay valid; process in the
+        // order they were detected (close order) per contract "each exit is
+        // processed independently in close order; the most recent close wins".
+        for &i in exited_at.iter().rev() {
+            let rt = self.round_trips.remove(i);
+            self.handle_round_trip_exit(rt);
+        }
+    }
+
+    fn handle_round_trip_exit(&mut self, rt: ViewerRoundTrip) {
+        let content = std::fs::read_to_string(&rt.handoff_path).unwrap_or_default();
+        let landed = validate_handoff(&content, &rt.filelist);
+        let _ = std::fs::remove_file(&rt.handoff_path);
+        match landed {
+            Some(path) => {
+                self.log(format!(
+                    "Round trip (viewer {}): {} -> {}",
+                    rt.viewer_id,
+                    rt.launched_with.display(),
+                    path.display()
+                ));
+                self.stage_selection_from_round_trip(&path);
+            }
+            None => {
+                self.log(format!(
+                    "Round trip (viewer {}) closed without a usable handoff (content length {})",
+                    rt.viewer_id,
+                    content.len()
+                ));
+            }
+        }
+    }
+
+    /// Select + stage the landed image, scrolling the list to it (US2 AS1).
+    /// If it no longer passes the active filter, clear the filter rather than
+    /// silently dropping the handoff (US2-3).
+    fn stage_selection_from_round_trip(&mut self, path: &Path) {
+        self.selected = Some(path.to_path_buf());
+        self.pending_scroll_path = Some(path.to_path_buf());
+        let (_, indices) = self.compute_list_indices();
+        let in_filter = indices
+            .iter()
+            .any(|&i| self.images[i].path.as_path() == path);
+        let name = file_name_display(path);
+        if in_filter {
+            self.status = format!("Round trip landed on {name}");
+        } else {
+            self.search.clear();
+            self.status =
+                format!("Round trip landed on {name} — cleared the active filter to show it");
+        }
+    }
 }

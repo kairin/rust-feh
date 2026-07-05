@@ -2,8 +2,9 @@
 //! Pure UI/business logic testable without egui (feature 001 validation).
 
 use crate::types::{
-    AssetStatus, FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode,
-    OutputPolicy, ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
+    ActionKind, ActionOutcome, ActionPrefs, ActionResult, AssetStatus, ContextAction,
+    FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode, OutputPolicy,
+    ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
@@ -72,6 +73,194 @@ pub fn feh_entry_filelist_path(entry_id: &str) -> PathBuf {
     runtime_cache_dir().join(format!("filelist-{}-{}.txt", std::process::id(), entry_id))
 }
 
+/// POSIX single-quote escaping: wrap `s` in single quotes and replace every
+/// embedded `'` with the `'\''` sequence (close-quote, escaped literal quote,
+/// reopen-quote). The result is a single shell word that a POSIX `/bin/sh -c`
+/// reproduces byte-for-byte, no matter what metacharacters `s` contains.
+///
+/// This is the ONLY place rust-feh emits shell syntax, and only for the VALUE
+/// of feh's `--info` argument (which feh itself later runs via its own internal
+/// `/bin/sh -c`). rust-feh never hands a shell a command line of its own.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Build the exact round-trip viewer invocation (contract:
+/// `contracts/viewer-roundtrip.md`, research R1/R2) as an **argument vector**.
+///
+/// Returns `(program, args, envs)` where every element of `args` is one
+/// separate argument, to be passed to `std::process::Command::arg`/`args`
+/// individually. rust-feh NEVER concatenates these into a single shell command
+/// line — no shell parses them on the rust-feh side, so `filelist_path` and
+/// `start_at` need (and receive) no escaping and pass through verbatim even
+/// when they contain shell metacharacters, spaces, or quotes.
+///
+/// The single `--info` argument's VALUE is a shell command string, because feh
+/// runs it through feh's own `/bin/sh -c` for every displayed image. Only the
+/// `handoff_path` interpolated into that value is shell-quoted (defensively; in
+/// practice it is always rust-feh-generated from `runtime_cache_dir()`).
+pub fn viewer_spawn_command(
+    filelist_path: &Path,
+    start_at: &Path,
+    handoff_path: &Path,
+    profile_dir: &Path,
+) -> (String, Vec<String>, Vec<(String, String)>) {
+    let info_command = format!(
+        "echo %F > {}",
+        shell_single_quote(&handoff_path.display().to_string())
+    );
+    let args = vec![
+        "--geometry".to_string(),
+        FEH_VIEWER_GEOMETRY.to_string(),
+        "--scale-down".to_string(),
+        "--zoom".to_string(),
+        FEH_VIEWER_ZOOM.to_string(),
+        "--info".to_string(),
+        info_command,
+        "--filelist".to_string(),
+        filelist_path.display().to_string(),
+        "--start-at".to_string(),
+        start_at.display().to_string(),
+    ];
+    let envs = vec![(
+        "XDG_CONFIG_HOME".to_string(),
+        profile_dir.display().to_string(),
+    )];
+    ("feh".to_string(), args, envs)
+}
+
+/// Find the index of the filelist entry that a handoff candidate path resolves
+/// to, or `None`. Membership in the filelist rust-feh itself wrote is the trust
+/// gate (research R4): a handoff value is accepted ONLY if it names a path
+/// already in the launched filelist.
+///
+/// Primary check canonicalizes both the candidate and each entry (resolving
+/// symlinks and `..`) and compares — this is what defeats symlink-escape and
+/// path-traversal: a candidate that superficially sits "inside" a trusted
+/// directory but canonically resolves elsewhere matches no entry and is
+/// rejected. If the candidate cannot be canonicalized (e.g. the file was
+/// deleted between display and read-back — a legitimate failure mode), fall
+/// back to a RAW path comparison against the raw filelist, which still bounds
+/// acceptance to paths already in the trusted list and so does not reopen the
+/// symlink hole.
+fn matching_filelist_index(candidate: &Path, filelist: &[PathBuf]) -> Option<usize> {
+    match candidate.canonicalize() {
+        Ok(canon_candidate) => filelist
+            .iter()
+            .position(|entry| entry.canonicalize().is_ok_and(|c| c == canon_candidate)),
+        Err(_) => filelist.iter().position(|entry| entry == candidate),
+    }
+}
+
+/// Starting at `index`, return the nearest filelist entry that still exists on
+/// disk, expanding outward as index-1, index+1, index-2, index+2, … (contract
+/// "handoff image deleted meanwhile" → nearest surviving neighbor). Returns the
+/// entry at `index` itself if it exists; `None` if nothing in the list survives.
+fn nearest_surviving_neighbor(filelist: &[PathBuf], index: usize) -> Option<PathBuf> {
+    if index >= filelist.len() {
+        return None;
+    }
+    if filelist[index].exists() {
+        return Some(filelist[index].clone());
+    }
+    let n = filelist.len();
+    let mut offset = 1usize;
+    loop {
+        let mut progressed = false;
+        if index >= offset {
+            progressed = true;
+            let li = index - offset;
+            if filelist[li].exists() {
+                return Some(filelist[li].clone());
+            }
+        }
+        if index + offset < n {
+            progressed = true;
+            let ri = index + offset;
+            if filelist[ri].exists() {
+                return Some(filelist[ri].clone());
+            }
+        }
+        if !progressed {
+            return None;
+        }
+        offset += 1;
+    }
+}
+
+/// Validate the UNTRUSTED handoff file content feh wrote (contract "Exit
+/// handling"/"Failure modes", research R4). `content` is raw bytes-as-str read
+/// from a file an external process wrote; it is never trusted blindly.
+///
+/// Returns the trusted filelist `PathBuf` to select (never the raw untrusted
+/// string), or `None` when the content should be ignored. Steps:
+/// 1. take only the first line, trimmed; empty → `None`;
+/// 2. resolve it to a filelist entry via `matching_filelist_index`
+///    (canonicalize-and-compare, with a raw-compare fallback for deleted files);
+///    no match → `None`;
+/// 3. return that entry if it still exists, else its nearest surviving
+///    neighbor; `None` if the whole list is gone.
+///
+/// Logging of rejected/accepted round-trips is the caller's responsibility
+/// (main.rs); this function never echoes untrusted content.
+pub fn validate_handoff(content: &str, filelist: &[PathBuf]) -> Option<PathBuf> {
+    let first_line = content.lines().next()?.trim();
+    if first_line.is_empty() {
+        return None;
+    }
+    let candidate = Path::new(first_line);
+    let index = matching_filelist_index(candidate, filelist)?;
+    nearest_surviving_neighbor(filelist, index)
+}
+
+/// Handoff file path for one round-trip viewer (contract:
+/// `runtime_cache_dir()/handoff-<pid>-<viewer_id>`), unique per viewer.
+pub fn handoff_path(pid: u32, viewer_id: u64) -> PathBuf {
+    runtime_cache_dir().join(format!("handoff-{pid}-{viewer_id}"))
+}
+
+/// Remove any leftover `handoff-*` files under the runtime cache dir (e.g.
+/// left behind if rust-feh exited while round-trip viewers were still open).
+/// Called once at startup. Returns the number of files removed; best-effort
+/// (I/O errors on individual files are silently skipped, not fatal).
+pub fn cleanup_stale_handoffs() -> usize {
+    let dir = runtime_cache_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("handoff-") && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Isolated feh config directory for round-trip viewers (research R2):
+/// pointing `XDG_CONFIG_HOME` here means launched viewers never read, write,
+/// or shadow the user's personal `~/.config/feh` — stock navigation defaults,
+/// no personal-theme overlays. Created empty on first use; idempotent.
+pub fn viewer_profile_dir() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = base.join(".config").join("rust-feh").join("viewer-profile");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Scratch directory for Prepare Fast materialized JPEGs (session-scoped).
 pub fn prepare_fast_work_dir() -> PathBuf {
     runtime_cache_dir().join(format!("prepare-fast-{}", std::process::id()))
@@ -93,8 +282,12 @@ pub fn save_launch_list(list: &FehLaunchList) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Invalid launch-list path: {}", path.display()));
     };
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create config directory {}: {e}",
+            parent.display()
+        )
+    })?;
     let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let data = serde_json::to_vec_pretty(list)
         .map_err(|e| format!("Failed to serialize launch entries: {e}"))?;
@@ -141,8 +334,12 @@ pub fn save_window_prefs(prefs: &WindowPreferences) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Invalid window-prefs path: {}", path.display()));
     };
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create config directory {}: {e}",
+            parent.display()
+        )
+    })?;
     let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let data = serde_json::to_vec_pretty(prefs)
         .map_err(|e| format!("Failed to serialize window preferences: {e}"))?;
@@ -173,6 +370,58 @@ pub fn load_window_prefs() -> WindowPreferences {
     }
 }
 
+/// Persistence location for action preferences (feature 016, FR-003).
+pub fn action_prefs_path() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(".config")
+        .join("rust-feh")
+        .join("action-prefs.json")
+}
+
+/// Persist action preferences using a temp-file + rename write.
+pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
+    let path = action_prefs_path();
+    let Some(parent) = path.parent() else {
+        return Err(format!("Invalid action-prefs path: {}", path.display()));
+    };
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create config directory {}: {e}",
+            parent.display()
+        )
+    })?;
+    let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let data = serde_json::to_vec_pretty(prefs)
+        .map_err(|e| format!("Failed to serialize action preferences: {e}"))?;
+    std::fs::write(&temp, data)
+        .map_err(|e| format!("Failed to write action preferences {}: {e}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Failed to save action preferences {}: {e}", path.display())
+    })?;
+    Ok(())
+}
+
+/// Load action preferences; missing or corrupt files recover to defaults.
+pub fn load_action_prefs() -> ActionPrefs {
+    let path = action_prefs_path();
+    let Ok(data) = std::fs::read(&path) else {
+        return ActionPrefs::default();
+    };
+    match serde_json::from_slice(&data) {
+        Ok(prefs) => prefs,
+        Err(e) => {
+            eprintln!(
+                "[rust-feh] warning: corrupt action-prefs.json at {}: {e}; using defaults",
+                path.display()
+            );
+            ActionPrefs::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryLaunchState {
     pub launchable: bool,
@@ -181,8 +430,7 @@ pub struct EntryLaunchState {
 
 /// Decode full image bytes to native-dimension RGBA8 pixels for clipboard copy.
 pub fn decode_image_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| format!("Failed to decode image: {e}"))?;
+    let img = image::load_from_memory(bytes).map_err(|e| format!("Failed to decode image: {e}"))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok((width, height, rgba.into_raw()))
@@ -192,8 +440,8 @@ pub fn decode_image_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String>
 pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read image: {e}"))?;
     let (width, height, rgba) = decode_image_to_rgba(&bytes)?;
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|e| format!("Clipboard unavailable: {e}"))?;
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| format!("Clipboard unavailable: {e}"))?;
     let image = arboard::ImageData {
         width: width as usize,
         height: height as usize,
@@ -204,9 +452,7 @@ pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
         .map_err(|e| format!("Clipboard copy failed: {e}"))?;
     Ok(format!(
         "Copied image to clipboard: {}",
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+        path.file_name().unwrap_or_default().to_string_lossy()
     ))
 }
 
@@ -276,7 +522,9 @@ pub fn entry_is_launchable(
 }
 
 /// Write one absolute path per line for feh `--filelist`.
-pub fn write_feh_filelist(paths: impl IntoIterator<Item = impl AsRef<Path>>) -> std::io::Result<usize> {
+pub fn write_feh_filelist(
+    paths: impl IntoIterator<Item = impl AsRef<Path>>,
+) -> std::io::Result<usize> {
     write_feh_filelist_to(feh_filelist_temp_path(), paths)
 }
 
@@ -302,10 +550,7 @@ pub fn write_feh_filelist_to(
 /// GVFS/SMB/NFS paths are slow for per-file subprocess identify during scan.
 pub fn is_network_mount_path(path: &Path) -> bool {
     let s = path.display().to_string();
-    s.contains("/gvfs/")
-        || s.contains("smb-share:")
-        || s.contains("/nfs/")
-        || s.starts_with("//")
+    s.contains("/gvfs/") || s.contains("smb-share:") || s.contains("/nfs/") || s.starts_with("//")
 }
 
 /// Whether ImageMagick identify may run during directory scan (FR-001 / network policy).
@@ -408,9 +653,7 @@ pub fn list_indices(
     sort: SortMode,
 ) -> Vec<usize> {
     let mut indices = filter_indices(images, root, search);
-    indices.sort_by(|&a, &b| {
-        sort_key(images, a, sort, root).cmp(&sort_key(images, b, sort, root))
-    });
+    indices.sort_by_key(|&a| sort_key(images, a, sort, root));
     indices
 }
 
@@ -469,7 +712,10 @@ pub fn format_inventory_bar(inv: &ScanInventory, root_label: &str) -> Vec<String
             "Converted (processed output exists) ..... {}",
             inv.converted
         ),
-        format!("Awaiting convert ....................... {}", inv.awaiting_convert),
+        format!(
+            "Awaiting convert ....................... {}",
+            inv.awaiting_convert
+        ),
         format!(
             "Non-image files skipped ............... {}",
             inv.non_image_skipped
@@ -763,7 +1009,10 @@ pub fn add_or_update_asset_in_inventory(
 }
 
 /// Root tree folder listed count should match inventory native_listed (SC-005).
-pub fn tree_root_listed_matches_inventory(tree: &FolderTreeNode, inventory: &ScanInventory) -> bool {
+pub fn tree_root_listed_matches_inventory(
+    tree: &FolderTreeNode,
+    inventory: &ScanInventory,
+) -> bool {
     tree.relative_path == "." && tree.listed_count == inventory.native_listed
 }
 
@@ -807,17 +1056,16 @@ pub fn compute_output_path(
     policy: &OutputPolicy,
 ) -> Result<PathBuf, String> {
     let parent = source.parent().unwrap_or(Path::new("."));
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
     let ext = ext.trim_start_matches('.');
     match policy {
         OutputPolicy::NewSubfolder { name } => {
             let dir = parent.join(name);
             Ok(dir.join(format!("{stem}{stem_suffix}.{ext}")))
         }
-        OutputPolicy::SuffixedSibling { suffix } => Ok(parent.join(format!("{stem}{suffix}.{ext}"))),
+        OutputPolicy::SuffixedSibling { suffix } => {
+            Ok(parent.join(format!("{stem}{suffix}.{ext}")))
+        }
         OutputPolicy::InPlaceWithBackup { .. } => {
             let orig_ext = source
                 .extension()
@@ -835,7 +1083,11 @@ pub struct CropPreviewPixels {
     pub rgba: Vec<u8>,
 }
 
-pub fn crop_preview_pixels(source: &Path, geometry: &str, max_dim: u32) -> Result<CropPreviewPixels, String> {
+pub fn crop_preview_pixels(
+    source: &Path,
+    geometry: &str,
+    max_dim: u32,
+) -> Result<CropPreviewPixels, String> {
     use crate::image_proc::parse_crop_geometry;
     let rect = parse_crop_geometry(geometry)?;
     let img = image::open(source).map_err(|e| e.to_string())?;
@@ -887,10 +1139,7 @@ pub fn expand_rename_pattern(
 }
 
 fn expand_one_rename_token(pattern: &str, source: &Path, counter: u32) -> Result<String, String> {
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
     let ext = source
         .extension()
         .map(|e| e.to_string_lossy().into_owned())
@@ -970,7 +1219,9 @@ fn is_leap(y: u32) -> bool {
 }
 
 /// Aggregate per-item batch results into a summary (for UI + tests).
-pub fn aggregate_batch_results(results: &[Result<ProcessedResult, String>]) -> crate::image_proc::BatchSummary {
+pub fn aggregate_batch_results(
+    results: &[Result<ProcessedResult, String>],
+) -> crate::image_proc::BatchSummary {
     let total = results.len();
     let succeeded = results.iter().filter(|r| r.is_ok()).count();
     let failed = total.saturating_sub(succeeded);
@@ -1015,7 +1266,11 @@ pub fn apply_rename_pairs(pairs: &[(PathBuf, String)]) -> RenameApplyOutcome {
 }
 
 pub fn format_image_tools_log(result: &ProcessedResult) -> String {
-    let hit = if result.was_cache_hit { " [cache hit]" } else { "" };
+    let hit = if result.was_cache_hit {
+        " [cache hit]"
+    } else {
+        ""
+    };
     format!(
         "Image tools: {:?} {} -> {}{}",
         result.operation,
@@ -1023,6 +1278,37 @@ pub fn format_image_tools_log(result: &ProcessedResult) -> String {
         result.dest_path.display(),
         hit
     )
+}
+
+fn action_kind_label(kind: &ActionKind) -> &'static str {
+    match kind {
+        ActionKind::Context(ContextAction::SaveCopyTo) => "Save a copy",
+        ActionKind::Context(ContextAction::MoveTo) => "Move",
+        ActionKind::Context(ContextAction::ResizeCopy) => "Resize copy",
+        ActionKind::Context(ContextAction::ConvertFormat) => "Convert format",
+        ActionKind::Context(ContextAction::CopyPath) => "Copy path",
+        ActionKind::Context(ContextAction::CopyImage) => "Copy image",
+        ActionKind::RoundTrip => "Round trip",
+    }
+}
+
+/// Format one `ActionOutcome` as a single human-readable activity-log line
+/// (feature 016, FR-010). Never echoes untrusted content verbatim; this only
+/// ever receives already-validated paths/reasons produced by this codebase.
+pub fn format_action_outcome(outcome: &ActionOutcome) -> String {
+    let label = action_kind_label(&outcome.action);
+    match &outcome.result {
+        ActionResult::Ok { produced } => {
+            let target = produced.as_ref().or(outcome.destination.as_ref());
+            match target {
+                Some(p) => format!("{label}: {} -> {}", outcome.image.display(), p.display()),
+                None => format!("{label}: {}", outcome.image.display()),
+            }
+        }
+        ActionResult::Err { reason } => {
+            format!("{label} failed: {} — {reason}", outcome.image.display())
+        }
+    }
 }
 
 pub struct JobProgress {
@@ -1078,14 +1364,217 @@ where
     rx
 }
 
+/// Find a free path in dest_dir for file_name, handling collisions with numeric suffixes.
+/// If the path doesn't exist, return it unchanged. Otherwise return name-1, name-2, etc.,
+/// filling gaps (e.g. if name and name-1 exist but name-2 doesn't, return name-2).
+/// Handles dotfiles and files with/without extensions correctly.
+pub fn collision_suffixed_path(dest_dir: &Path, file_name: &str) -> PathBuf {
+    let target = dest_dir.join(file_name);
+    if !target.exists() {
+        return target;
+    }
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.to_string());
+    let ext = Path::new(file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned());
+
+    let mut suffix = 1u32;
+    loop {
+        let new_name = if let Some(ref e) = ext {
+            format!("{stem}-{suffix}.{e}")
+        } else {
+            format!("{stem}-{suffix}")
+        };
+        let candidate = dest_dir.join(&new_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// Collision-safe copy of `src` into `dest_dir` (feature 016, FR-004). Verifies
+/// the copy's byte length matches the source before returning; never overwrites
+/// an existing file at the destination.
+pub fn save_copy_to(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| format!("Source has no file name: {}", src.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let dest = collision_suffixed_path(dest_dir, &file_name);
+    let src_len = std::fs::metadata(src)
+        .map_err(|e| format!("Failed to read source metadata {}: {e}", src.display()))?
+        .len();
+    std::fs::copy(src, &dest).map_err(|e| {
+        format!(
+            "Failed to copy {} to {}: {e}",
+            src.display(),
+            dest.display()
+        )
+    })?;
+    let copied_len = std::fs::metadata(&dest)
+        .map_err(|e| format!("Failed to verify copy at {}: {e}", dest.display()))?
+        .len();
+    if copied_len != src_len {
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!(
+            "Copy verification failed for {}: copied {copied_len} bytes, expected {src_len}",
+            src.display()
+        ));
+    }
+    Ok(dest)
+}
+
+/// A planned loss-proof move: the exact source, final destination (already
+/// collision-safe), and a same-directory temp name used during the fallback
+/// copy-verify-rename path (feature 016, R7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovePlan {
+    pub source: PathBuf,
+    pub final_dest: PathBuf,
+    pub temp_dest: PathBuf,
+}
+
+/// Plan a loss-proof move of `src` into `dest_dir`, choosing a collision-safe
+/// final name up front (feature 016, FR-004/FR-005).
+pub fn plan_loss_proof_move(src: &Path, dest_dir: &Path) -> Result<MovePlan, String> {
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| format!("Source has no file name: {}", src.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let final_dest = collision_suffixed_path(dest_dir, &file_name);
+    let temp_dest = dest_dir.join(format!(
+        ".{file_name}.rustfeh-move-tmp-{}",
+        std::process::id()
+    ));
+    Ok(MovePlan {
+        source: src.to_path_buf(),
+        final_dest,
+        temp_dest,
+    })
+}
+
+/// Execute a loss-proof move plan: try a fast same-filesystem atomic rename
+/// first; on failure (e.g. cross-filesystem), fall back to copy → verify byte
+/// length → atomic rename into place → remove source. The source is only
+/// removed after the destination copy is verified to exist with the correct
+/// size. On any failure the source is left intact; at most one orphaned temp
+/// file may remain at `plan.temp_dest`, which is cleaned up on error here.
+pub fn execute_move_plan(plan: &MovePlan) -> Result<PathBuf, String> {
+    if std::fs::rename(&plan.source, &plan.final_dest).is_ok() {
+        return Ok(plan.final_dest.clone());
+    }
+
+    let src_len = std::fs::metadata(&plan.source)
+        .map_err(|e| {
+            format!(
+                "Failed to read source metadata {}: {e}",
+                plan.source.display()
+            )
+        })?
+        .len();
+
+    if let Err(e) = std::fs::copy(&plan.source, &plan.temp_dest) {
+        let _ = std::fs::remove_file(&plan.temp_dest);
+        return Err(format!(
+            "Failed to copy {} to destination: {e}",
+            plan.source.display()
+        ));
+    }
+
+    let copied_len = match std::fs::metadata(&plan.temp_dest) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            let _ = std::fs::remove_file(&plan.temp_dest);
+            return Err(format!("Failed to verify copy at destination: {e}"));
+        }
+    };
+    if copied_len != src_len {
+        let _ = std::fs::remove_file(&plan.temp_dest);
+        return Err(format!(
+            "Move verification failed for {}: copied {copied_len} bytes, expected {src_len}",
+            plan.source.display()
+        ));
+    }
+
+    if let Err(e) = std::fs::rename(&plan.temp_dest, &plan.final_dest) {
+        let _ = std::fs::remove_file(&plan.temp_dest);
+        return Err(format!(
+            "Failed to finalize move to {}: {e}",
+            plan.final_dest.display()
+        ));
+    }
+
+    std::fs::remove_file(&plan.source).map_err(|e| {
+        format!(
+            "Copied to {} but failed to remove source {}: {e} (source retained, no data lost)",
+            plan.final_dest.display(),
+            plan.source.display()
+        )
+    })?;
+
+    Ok(plan.final_dest.clone())
+}
+
+/// Compute output dimensions for downscaling an image to fit max_edge.
+/// Preserves aspect ratio and never upscales. Guards against zero inputs.
+pub fn stage_decode_bounds(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
+    if w == 0 || h == 0 || max_edge == 0 {
+        return (w, h);
+    }
+
+    let longest = w.max(h);
+    if longest <= max_edge {
+        return (w, h);
+    }
+
+    let scale = max_edge as f32 / longest as f32;
+    let new_w = ((w as f32 * scale).round().max(1.0)) as u32;
+    let new_h = ((h as f32 * scale).round().max(1.0)) as u32;
+    (new_w, new_h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+
+    fn test_scratch_dir(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(name)
+    }
 
     fn entry(path: &str) -> ImageEntry {
         ImageEntry::new(PathBuf::from(path))
     }
+
+    /// `action_prefs_path()` resolves to one fixed real path (`~/.config/rust-feh/
+    /// action-prefs.json`); the three `action_prefs_*` tests below read/write it
+    /// directly and must not interleave under cargo's parallel test threads.
+    static ACTION_PREFS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `feh_filelist_temp_path()` is a single pid-scoped path shared by every test
+    /// in this process; the two tests below both write/read it directly and must
+    /// not interleave under cargo's parallel test threads (pre-existing latent
+    /// flake, tightened while touching this file for feature 016).
+    static FEH_FILELIST_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `cleanup_stale_handoffs()` operates on one real shared directory
+    /// (`runtime_cache_dir()`); the tests below must not interleave their own
+    /// create-then-cleanup sequences under cargo's parallel test threads, or
+    /// one test's cleanup call can sweep away another's not-yet-asserted files
+    /// (observed flake: `removed >= 2` failing when a concurrent thread's own
+    /// `cleanup_stale_handoffs()` call won the race).
+    static HANDOFF_CLEANUP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn post_scan_appends_feh_warning_when_unavailable() {
@@ -1154,6 +1643,9 @@ mod tests {
 
     #[test]
     fn feh_filelist_order_matches_list_indices_sorts() {
+        let _guard = FEH_FILELIST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let root = Path::new("/data");
         let images = vec![
             entry("/data/b/z.jpg"),
@@ -1162,20 +1654,12 @@ mod tests {
         ];
         for sort in [SortMode::Path, SortMode::Name, SortMode::Folder] {
             let indices = list_indices(&images, Some(root), "", sort);
-            let ordered: Vec<PathBuf> = indices
-                .iter()
-                .map(|&i| images[i].path.clone())
-                .collect();
+            let ordered: Vec<PathBuf> = indices.iter().map(|&i| images[i].path.clone()).collect();
             let _ = std::fs::remove_file(feh_filelist_temp_path());
             write_feh_filelist(&ordered).unwrap();
             let body = std::fs::read_to_string(feh_filelist_temp_path()).unwrap();
             let lines: Vec<&str> = body.lines().collect();
-            assert_eq!(
-                lines.len(),
-                ordered.len(),
-                "sort {:?} line count",
-                sort
-            );
+            assert_eq!(lines.len(), ordered.len(), "sort {:?} line count", sort);
             for (line, path) in lines.iter().zip(ordered.iter()) {
                 assert_eq!(*line, path.display().to_string());
             }
@@ -1185,6 +1669,9 @@ mod tests {
 
     #[test]
     fn write_feh_filelist_one_path_per_line() {
+        let _guard = FEH_FILELIST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join("rust-feh-filelist-test");
         let _ = std::fs::remove_file(feh_filelist_temp_path());
         let a = dir.join("a.jpg");
@@ -1223,10 +1710,7 @@ mod tests {
     #[test]
     fn join_activity_log_empty_and_lines() {
         assert_eq!(join_activity_log(&[]), "(no activity yet)");
-        assert_eq!(
-            join_activity_log(&["a".into(), "b".into()]),
-            "a\nb"
-        );
+        assert_eq!(join_activity_log(&["a".into(), "b".into()]), "a\nb");
     }
 
     #[test]
@@ -1382,10 +1866,7 @@ mod tests {
         let images = vec![
             entry("/data/a.jpg"),
             entry("/data/b.png"),
-            ImageEntry::with_status(
-                PathBuf::from("/data/c.jpg"),
-                FileStatus::Converted,
-            ),
+            ImageEntry::with_status(PathBuf::from("/data/c.jpg"), FileStatus::Converted),
         ];
         let indices = vec![0, 1, 2];
         let tree = build_folder_tree(&images, Some(root), &indices);
@@ -1417,5 +1898,870 @@ mod tests {
             super::window_preset_dimensions(WindowSizePreset::Large),
             (1280.0, 960.0)
         );
+    }
+
+    #[test]
+    fn collision_suffixed_path_no_collision_returns_unchanged() {
+        let dir = test_scratch_dir("rust-feh-collision-test-1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = collision_suffixed_path(&dir, "photo.jpg");
+        assert_eq!(result, dir.join("photo.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_existing_name_gets_dash_one() {
+        let dir = test_scratch_dir("rust-feh-collision-test-2");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "photo.jpg");
+        assert_eq!(result, dir.join("photo-1.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_fills_gap() {
+        let dir = test_scratch_dir("rust-feh-collision-test-3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        std::fs::write(dir.join("photo-1.jpg"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "photo.jpg");
+        assert_eq!(result, dir.join("photo-2.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_dotfile_no_extension_split() {
+        let dir = test_scratch_dir("rust-feh-collision-test-4");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".bashrc"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, ".bashrc");
+        assert_eq!(result, dir.join(".bashrc-1"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_no_extension() {
+        let dir = test_scratch_dir("rust-feh-collision-test-5");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "README");
+        assert_eq!(result, dir.join("README-1"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_suffixed_path_non_ascii() {
+        let dir = test_scratch_dir("rust-feh-collision-test-6");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("café-été.jpg"), b"x").unwrap();
+        let result = collision_suffixed_path(&dir, "café-été.jpg");
+        assert_eq!(result, dir.join("café-été-1.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_decode_bounds_landscape_downscales() {
+        assert_eq!(stage_decode_bounds(4000, 2000, 2000), (2000, 1000));
+    }
+
+    #[test]
+    fn stage_decode_bounds_portrait_downscales() {
+        assert_eq!(stage_decode_bounds(2000, 4000, 2000), (1000, 2000));
+    }
+
+    #[test]
+    fn stage_decode_bounds_small_image_no_upscale() {
+        assert_eq!(stage_decode_bounds(400, 300, 2048), (400, 300));
+    }
+
+    #[test]
+    fn stage_decode_bounds_exact_edge_no_upscale() {
+        assert_eq!(stage_decode_bounds(2048, 1024, 2048), (2048, 1024));
+    }
+
+    #[test]
+    fn stage_decode_bounds_zero_guards() {
+        assert_eq!(stage_decode_bounds(0, 100, 2048), (0, 100));
+        assert_eq!(stage_decode_bounds(100, 100, 0), (100, 100));
+        assert_eq!(stage_decode_bounds(100, 0, 2048), (100, 0));
+    }
+
+    #[test]
+    fn action_prefs_round_trip_save_and_load() {
+        let _guard = ACTION_PREFS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let path = action_prefs_path();
+        // Save original if it exists
+        let original_backup = std::fs::read(&path).ok();
+
+        // Remove the file if it exists to start fresh
+        let _ = std::fs::remove_file(&path);
+
+        // Create and save test prefs
+        let test_prefs = ActionPrefs {
+            version: 1,
+            last_destination: Some(PathBuf::from("/tmp/some/dir")),
+        };
+
+        save_action_prefs(&test_prefs).expect("save should succeed");
+
+        // Load it back
+        let loaded = load_action_prefs();
+
+        // Verify round-trip equality
+        assert_eq!(loaded, test_prefs);
+
+        // Restore original or clean up
+        let _ = std::fs::remove_file(&path);
+        if let Some(backup_data) = original_backup {
+            let _ = std::fs::write(&path, backup_data);
+        }
+    }
+
+    #[test]
+    fn action_prefs_missing_file_returns_default() {
+        let _guard = ACTION_PREFS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let path = action_prefs_path();
+        // Save original if it exists
+        let original_backup = std::fs::read(&path).ok();
+
+        // Remove the file if it exists so path is absent
+        let _ = std::fs::remove_file(&path);
+
+        // Load should return default
+        let loaded = load_action_prefs();
+        assert_eq!(loaded, ActionPrefs::default());
+
+        // Restore original or clean up
+        let _ = std::fs::remove_file(&path);
+        if let Some(backup_data) = original_backup {
+            let _ = std::fs::write(&path, backup_data);
+        }
+    }
+
+    #[test]
+    fn action_prefs_corrupt_json_recovers_to_default() {
+        let _guard = ACTION_PREFS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let path = action_prefs_path();
+        // Save original if it exists
+        let original_backup = std::fs::read(&path).ok();
+
+        // Create parent dirs if needed
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Write garbage bytes (not valid JSON)
+        std::fs::write(&path, b"not valid json garbage{").expect("write garbage");
+
+        // Load should return default and log warning
+        let loaded = load_action_prefs();
+        assert_eq!(loaded, ActionPrefs::default());
+
+        // Restore original or clean up
+        let _ = std::fs::remove_file(&path);
+        if let Some(backup_data) = original_backup {
+            let _ = std::fs::write(&path, backup_data);
+        }
+    }
+
+    #[test]
+    fn loss_proof_move_same_dir_or_same_fs_succeeds() {
+        let temp_base = test_scratch_dir("rust-feh-move-test-1");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"test file content";
+        std::fs::write(&src, content).unwrap();
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+        let result = execute_move_plan(&plan).unwrap();
+
+        assert!(
+            !src.exists(),
+            "source should be removed after successful move"
+        );
+        assert!(result.exists(), "destination should exist");
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            content,
+            "destination content should match source"
+        );
+        assert_eq!(
+            result,
+            dest_dir.join("source.txt"),
+            "returned path should match dest_dir.join(original_name)"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn loss_proof_move_collision_at_destination_gets_suffixed() {
+        let temp_base = test_scratch_dir("rust-feh-move-test-2");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("photo.jpg");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        std::fs::write(&src, b"A").unwrap();
+        std::fs::write(dest_dir.join("photo.jpg"), b"B").unwrap();
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+        let result = execute_move_plan(&plan).unwrap();
+
+        assert!(!src.exists(), "source should be removed after move");
+        assert_eq!(
+            result,
+            dest_dir.join("photo-1.jpg"),
+            "collision should result in -1 suffix"
+        );
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            b"A",
+            "new file should have source content"
+        );
+        assert_eq!(
+            std::fs::read(dest_dir.join("photo.jpg")).unwrap(),
+            b"B",
+            "existing photo.jpg should be untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn loss_proof_move_unwritable_destination_preserves_source() {
+        let temp_base = test_scratch_dir("rust-feh-move-test-3");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"source content";
+        std::fs::write(&src, content).unwrap();
+
+        // Make destination unwritable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o555);
+            std::fs::set_permissions(&dest_dir, perms).unwrap();
+        }
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+        let result = execute_move_plan(&plan);
+
+        assert!(
+            result.is_err(),
+            "move should fail with unwritable destination"
+        );
+        assert!(src.exists(), "source should still exist after failed move");
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            content,
+            "source content should be unchanged"
+        );
+
+        // Restore permissions for cleanup
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            let _ = std::fs::set_permissions(&dest_dir, perms);
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn loss_proof_move_source_preserved_on_verification_failure() {
+        let temp_base = test_scratch_dir("rust-feh-move-test-4");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        std::fs::write(&src, b"test").unwrap();
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+
+        // Verify plan structure
+        assert_eq!(plan.source, src);
+        assert_eq!(plan.final_dest, dest_dir.join("source.txt"));
+        assert_eq!(plan.temp_dest.parent(), Some(dest_dir.as_path()));
+        assert!(
+            plan.temp_dest
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(&std::process::id().to_string()),
+            "temp filename should contain process id"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_basic_copy() {
+        let temp_base = test_scratch_dir("rust-feh-copy-test-1");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"test file content";
+        std::fs::write(&src, content).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir).unwrap();
+
+        assert!(result.exists(), "destination should exist");
+        assert!(src.exists(), "source should still exist after copy");
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            content,
+            "destination content should match source"
+        );
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            content,
+            "source content should be unchanged"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_collision_gets_suffixed() {
+        let temp_base = test_scratch_dir("rust-feh-copy-test-2");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("photo.jpg");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let src_content = b"A";
+        let existing_content = b"B";
+        std::fs::write(&src, src_content).unwrap();
+        std::fs::write(dest_dir.join("photo.jpg"), existing_content).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir).unwrap();
+
+        assert_eq!(
+            result,
+            dest_dir.join("photo-1.jpg"),
+            "collision should result in -1 suffix"
+        );
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            src_content,
+            "new file should have source content"
+        );
+        assert_eq!(
+            std::fs::read(dest_dir.join("photo.jpg")).unwrap(),
+            existing_content,
+            "existing photo.jpg should be untouched"
+        );
+        assert!(src.exists(), "source should still exist after copy");
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_non_ascii_name() {
+        let temp_base = test_scratch_dir("rust-feh-copy-test-3");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("café.jpg");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"image data";
+        std::fs::write(&src, content).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir).unwrap();
+
+        assert!(result.exists(), "destination should exist");
+        assert_eq!(
+            result.file_name().unwrap().to_string_lossy(),
+            "café.jpg",
+            "filename should preserve non-ASCII characters"
+        );
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            content,
+            "destination content should match source"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_missing_source_returns_error() {
+        let temp_base = test_scratch_dir("rust-feh-copy-test-4");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("nonexistent.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir);
+
+        assert!(result.is_err(), "should return error for missing source");
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn format_action_outcome_ok_with_produced() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: None,
+            result: ActionResult::Ok {
+                produced: Some(PathBuf::from("/b/photo.jpg")),
+            },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("Save a copy"));
+        assert!(formatted.contains("/a/photo.jpg"));
+        assert!(formatted.contains("/b/photo.jpg"));
+    }
+
+    #[test]
+    fn format_action_outcome_ok_no_produced_falls_back_to_destination() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: Some(PathBuf::from("/b")),
+            result: ActionResult::Ok { produced: None },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("Save a copy"));
+        assert!(formatted.contains("/b"));
+    }
+
+    #[test]
+    fn format_action_outcome_err_includes_reason() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: None,
+            result: ActionResult::Err {
+                reason: "disk full".into(),
+            },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("failed"));
+        assert!(formatted.contains("disk full"));
+    }
+
+    #[test]
+    fn format_action_outcome_round_trip_label() {
+        let outcome = ActionOutcome {
+            action: ActionKind::RoundTrip,
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: None,
+            result: ActionResult::Ok { produced: None },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("Round trip"));
+    }
+
+    #[test]
+    fn format_action_outcome_covers_all_context_actions() {
+        let actions = vec![
+            ContextAction::SaveCopyTo,
+            ContextAction::MoveTo,
+            ContextAction::ResizeCopy,
+            ContextAction::ConvertFormat,
+            ContextAction::CopyPath,
+            ContextAction::CopyImage,
+        ];
+
+        let mut labels = Vec::new();
+        for action in actions {
+            let outcome = ActionOutcome {
+                action: ActionKind::Context(action),
+                image: PathBuf::from("/a/photo.jpg"),
+                destination: None,
+                result: ActionResult::Ok { produced: None },
+            };
+
+            let formatted = format_action_outcome(&outcome);
+            assert!(
+                !formatted.is_empty(),
+                "formatted string should not be empty"
+            );
+            labels.push(formatted);
+        }
+
+        // Verify all labels are distinct
+        for i in 0..labels.len() {
+            for j in (i + 1)..labels.len() {
+                assert_ne!(labels[i], labels[j], "labels should be distinct");
+            }
+        }
+    }
+
+    // ---- Feature 016 T015: viewer_spawn_command (argument-vector safety) ----
+
+    #[test]
+    fn viewer_spawn_command_produces_expected_argument_vector() {
+        let (program, args, envs) = viewer_spawn_command(
+            Path::new("/tmp/rust-feh/filelist-1.txt"),
+            Path::new("/home/user/pics/photo.jpg"),
+            Path::new("/tmp/rust-feh/handoff-1"),
+            Path::new("/home/user/.config/rust-feh/viewer-profile"),
+        );
+        assert_eq!(program, "feh");
+        assert_eq!(
+            args,
+            vec![
+                "--geometry".to_string(),
+                FEH_VIEWER_GEOMETRY.to_string(),
+                "--scale-down".to_string(),
+                "--zoom".to_string(),
+                FEH_VIEWER_ZOOM.to_string(),
+                "--info".to_string(),
+                "echo %F > '/tmp/rust-feh/handoff-1'".to_string(),
+                "--filelist".to_string(),
+                "/tmp/rust-feh/filelist-1.txt".to_string(),
+                "--start-at".to_string(),
+                "/home/user/pics/photo.jpg".to_string(),
+            ]
+        );
+        assert_eq!(
+            envs,
+            vec![(
+                "XDG_CONFIG_HOME".to_string(),
+                "/home/user/.config/rust-feh/viewer-profile".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn viewer_spawn_command_never_builds_a_shell_string_for_the_whole_invocation() {
+        let filelist = "/tmp/list.txt";
+        let start_at = "/tmp/pics/start.jpg";
+        let handoff = "/tmp/handoff-xyz";
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new(filelist),
+            Path::new(start_at),
+            Path::new(handoff),
+            Path::new("/tmp/profile"),
+        );
+        // The invocation is many separate arguments, never one joined shell line.
+        assert!(
+            args.len() > 1,
+            "expected an argument vector, not one string"
+        );
+        // No single argument concatenates more than one of the three distinct
+        // paths — proving they never get glued together into shell-parsed text.
+        for arg in &args {
+            let count = [filelist, start_at, handoff]
+                .into_iter()
+                .filter(|needle| arg.contains(*needle))
+                .count();
+            assert!(
+                count <= 1,
+                "argument {arg:?} concatenates multiple distinct paths"
+            );
+        }
+    }
+
+    #[test]
+    fn viewer_spawn_command_handles_adversarial_filenames_in_filelist_and_start_at_paths() {
+        let adversarial = "/tmp/weird; rm -rf ~ $(whoami) \"quoted\" 'single'.jpg";
+        let filelist = "/tmp/evil dir; touch pwned/filelist.txt";
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new(filelist),
+            Path::new(adversarial),
+            Path::new("/tmp/rust-feh/handoff-2"),
+            Path::new("/tmp/profile"),
+        );
+        // --start-at value is the path VERBATIM: it is its own arg-vector element,
+        // not shell-parsed text, so it receives no escaping and no truncation.
+        let start_idx = args.iter().position(|a| a == "--start-at").unwrap();
+        assert_eq!(args[start_idx + 1], adversarial);
+        // --filelist value is likewise verbatim.
+        let fl_idx = args.iter().position(|a| a == "--filelist").unwrap();
+        assert_eq!(args[fl_idx + 1], filelist);
+        // Same total arg count/shape as the ordinary case: the adversarial
+        // content did not fracture into extra or fewer arguments.
+        assert_eq!(args.len(), 11);
+    }
+
+    #[test]
+    fn viewer_spawn_command_shell_quotes_handoff_path_in_info_command() {
+        let handoff = "/tmp/rust-feh/handoff-o'brien-1";
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new("/tmp/list.txt"),
+            Path::new("/tmp/start.jpg"),
+            Path::new(handoff),
+            Path::new("/tmp/profile"),
+        );
+        let info_idx = args.iter().position(|a| a == "--info").unwrap();
+        let info = &args[info_idx + 1];
+        // POSIX single-quote escaping of the embedded quote: close, escaped
+        // literal quote, reopen. A real `sh -c` would treat the path as one
+        // intact argument.
+        assert!(
+            info.contains("'\\''"),
+            "info value not POSIX-escaped: {info}"
+        );
+        assert_eq!(info, "echo %F > '/tmp/rust-feh/handoff-o'\\''brien-1'");
+    }
+
+    #[test]
+    fn viewer_spawn_command_uses_geometry_and_zoom_constants() {
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new("/tmp/list.txt"),
+            Path::new("/tmp/start.jpg"),
+            Path::new("/tmp/handoff"),
+            Path::new("/tmp/profile"),
+        );
+        let g_idx = args.iter().position(|a| a == "--geometry").unwrap();
+        assert_eq!(args[g_idx + 1], FEH_VIEWER_GEOMETRY);
+        let z_idx = args.iter().position(|a| a == "--zoom").unwrap();
+        assert_eq!(args[z_idx + 1], FEH_VIEWER_ZOOM);
+    }
+
+    // ---- Feature 016 T016: validate_handoff (untrusted-input validation) ----
+
+    #[test]
+    fn validate_handoff_accepts_exact_match_in_filelist() {
+        let dir = test_scratch_dir("rust-feh-handoff-accept");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        let b = dir.join("b.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        let filelist = vec![a.clone(), b.clone()];
+        let content = b.display().to_string();
+        assert_eq!(validate_handoff(&content, &filelist), Some(b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_rejects_path_not_in_filelist() {
+        let dir = test_scratch_dir("rust-feh-handoff-notin");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        let outsider = dir.join("outsider.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        // Real, existing file — but membership in the filelist is the gate, not
+        // mere existence.
+        std::fs::write(&outsider, b"x").unwrap();
+        let filelist = vec![a];
+        let content = outsider.display().to_string();
+        assert_eq!(validate_handoff(&content, &filelist), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_rejects_garbage_content() {
+        let filelist = vec![PathBuf::from("/tmp/whatever/a.jpg")];
+        assert_eq!(
+            validate_handoff("\x00not a path!! $(whoami)", &filelist),
+            None
+        );
+    }
+
+    #[test]
+    fn validate_handoff_rejects_empty_content() {
+        let filelist = vec![PathBuf::from("/tmp/a.jpg")];
+        assert_eq!(validate_handoff("", &filelist), None);
+        assert_eq!(validate_handoff("   \n  \t", &filelist), None);
+    }
+
+    #[test]
+    fn validate_handoff_rejects_symlink_escape_attempt() {
+        let base = test_scratch_dir("rust-feh-handoff-symlink");
+        let _ = std::fs::remove_dir_all(&base);
+        let trusted = base.join("trusted");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&trusted).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let real = trusted.join("real.jpg");
+        std::fs::write(&real, b"x").unwrap();
+        let secret = outside.join("secret.jpg");
+        std::fs::write(&secret, b"x").unwrap();
+        // A symlink that superficially sits inside the trusted dir but points at
+        // the outside file.
+        let link = trusted.join("link.jpg");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        // Filelist contains only the genuinely-trusted real file.
+        let filelist = vec![real];
+        let content = link.display().to_string();
+        // link canonicalizes to outside/secret.jpg, which no filelist entry
+        // canonically equals -> rejected. This is the canonicalize-and-compare
+        // defense defeating the escape.
+        assert_eq!(validate_handoff(&content, &filelist), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn validate_handoff_deleted_image_falls_back_to_nearest_surviving_neighbor() {
+        let dir = test_scratch_dir("rust-feh-handoff-deleted");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = (1..=5).map(|i| dir.join(format!("{i}.jpg"))).collect();
+        for f in &files {
+            std::fs::write(f, b"x").unwrap();
+        }
+        // Delete the 3rd file AFTER building the filelist: its raw path still
+        // matches the filelist (canonicalize fails, raw fallback succeeds), but
+        // the file itself is gone.
+        std::fs::remove_file(&files[2]).unwrap();
+        let content = files[2].display().to_string();
+        let result = validate_handoff(&content, &files).expect("expected a surviving neighbor");
+        assert_ne!(result, files[2], "must not return the deleted path");
+        assert!(
+            result == files[1] || result == files[3],
+            "expected nearest surviving neighbor (files[1] or files[3]), got {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_trims_trailing_newline() {
+        let dir = test_scratch_dir("rust-feh-handoff-newline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        let filelist = vec![a.clone()];
+        // echo's trailing newline, the realistic case.
+        let content = format!("{}\n", a.display());
+        assert_eq!(validate_handoff(&content, &filelist), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_only_reads_first_line() {
+        let dir = test_scratch_dir("rust-feh-handoff-firstline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        let filelist = vec![a.clone()];
+        // Valid path on line 1, appended garbage after (corrupted/appended file).
+        let content = format!("{}\n/etc/passwd\ngarbage line\n", a.display());
+        assert_eq!(validate_handoff(&content, &filelist), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Feature 016 T017: handoff_path (handoff file path generation) ----
+
+    #[test]
+    fn handoff_path_includes_pid_and_viewer_id() {
+        let path = handoff_path(1234, 7);
+        let file_name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(file_name, "handoff-1234-7");
+        assert_eq!(path.parent().unwrap(), runtime_cache_dir());
+    }
+
+    #[test]
+    fn handoff_path_distinct_per_viewer_id() {
+        let path1 = handoff_path(1234, 1);
+        let path2 = handoff_path(1234, 2);
+        assert_ne!(path1, path2);
+    }
+
+    #[test]
+    fn cleanup_stale_handoffs_removes_only_handoff_prefixed_files() {
+        let _guard = HANDOFF_CLEANUP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = runtime_cache_dir();
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Use distinctive names to identify our test files
+        let handoff_file_1 = dir.join("handoff-9999-cleanup-test-1");
+        let handoff_file_2 = dir.join("handoff-9999-cleanup-test-2");
+        let non_handoff_file = dir.join("filelist-9999.txt");
+
+        // Create test files
+        std::fs::write(&handoff_file_1, b"test").unwrap();
+        std::fs::write(&handoff_file_2, b"test").unwrap();
+        std::fs::write(&non_handoff_file, b"test").unwrap();
+
+        // Call cleanup
+        let removed = cleanup_stale_handoffs();
+
+        // Both handoff files should be gone
+        assert!(!handoff_file_1.exists(), "handoff file 1 should be removed");
+        assert!(!handoff_file_2.exists(), "handoff file 2 should be removed");
+
+        // Non-handoff file should still exist
+        assert!(non_handoff_file.exists(), "non-handoff file should remain");
+
+        // Cleanup our test file
+        let _ = std::fs::remove_file(&non_handoff_file);
+
+        // At least 2 files were removed (our test files, possibly others)
+        assert!(removed >= 2, "should have removed at least 2 files, got {removed}");
+    }
+
+    #[test]
+    fn cleanup_stale_handoffs_does_not_panic_when_called() {
+        let _guard = HANDOFF_CLEANUP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // This tests that cleanup is safe to call; it should not panic
+        // even if the directory exists and has stale handoffs.
+        let _ = cleanup_stale_handoffs();
+        // If we got here without panicking, the test passes.
+    }
+
+    #[test]
+    fn viewer_profile_dir_creation_is_idempotent() {
+        let dir1 = viewer_profile_dir();
+        assert!(dir1.is_dir(), "viewer profile dir should exist after first call");
+        let dir2 = viewer_profile_dir();
+        assert_eq!(dir1, dir2, "path should be stable across calls");
+        assert!(dir2.is_dir(), "viewer profile dir should still exist after second call");
     }
 }

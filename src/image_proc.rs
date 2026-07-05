@@ -8,8 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::types::{FitMode, Filter, ImageOperation, OutputPolicy, ProcessedResult};
-use crate::ui_logic::compute_output_path;
+use crate::types::{Filter, FitMode, ImageOperation, OutputPolicy, ProcessedResult};
+use crate::ui_logic::{compute_output_path, stage_decode_bounds};
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcessOptions {
@@ -97,7 +97,12 @@ pub fn parse_crop_geometry(geometry: &str) -> Result<CropRect, String> {
     if w == 0 || h == 0 {
         return Err("Crop width and height must be > 0".into());
     }
-    Ok(CropRect { x, y, width: w, height: h })
+    Ok(CropRect {
+        x,
+        y,
+        width: w,
+        height: h,
+    })
 }
 
 fn clamp_crop(rect: CropRect, img_w: u32, img_h: u32) -> Result<(u32, u32, u32, u32), String> {
@@ -238,7 +243,12 @@ pub fn cache_put(
     let mut cmd = Command::new("magick-cache");
     quiet_magick_cache(&mut cmd);
     append_passkey(&mut cmd, passkey);
-    cmd.arg("-ttl").arg(ttl).arg("put").arg(cache_root).arg(iri).arg(input);
+    cmd.arg("-ttl")
+        .arg(ttl)
+        .arg("put")
+        .arg(cache_root)
+        .arg(iri)
+        .arg(input);
     let status = cmd.status().map_err(|e| e.to_string())?;
     if status.success() {
         Ok(())
@@ -289,7 +299,8 @@ pub fn materialize_from_cache(
         .arg(&dmr_ref)
         .arg(dest);
     if let Some(pk) = passkey {
-        cmd.arg("-define").arg(format!("dmr:passkey={}", pk.display()));
+        cmd.arg("-define")
+            .arg(format!("dmr:passkey={}", pk.display()));
     }
     let status = cmd.status().map_err(|e| e.to_string())?;
     if status.success() {
@@ -328,7 +339,11 @@ pub fn process_image(input: &Path, opts: &ProcessOptions) -> Result<PathBuf, Str
     process_image_crate(input, opts, &out_path)
 }
 
-fn process_image_crate(input: &Path, opts: &ProcessOptions, out_path: &Path) -> Result<PathBuf, String> {
+fn process_image_crate(
+    input: &Path,
+    opts: &ProcessOptions,
+    out_path: &Path,
+) -> Result<PathBuf, String> {
     let img = image::open(input).map_err(|e| e.to_string())?;
     let filter = filter_type(opts.filter);
     let mut out = img;
@@ -369,6 +384,23 @@ pub fn crop_image(input: &Path, geometry: &str, out_path: &Path) -> Result<PathB
     Ok(out_path.to_path_buf())
 }
 
+/// Decode an image file for the stage pane: full decode, then downscale so the
+/// longest edge is at most `max_edge` (never upscale), returning raw RGBA8
+/// bytes ready for an egui texture (feature 016, FR-001/R5).
+pub fn decode_stage_rgba(path: &Path, max_edge: u32) -> Result<(u32, u32, Vec<u8>), String> {
+    let img = image::open(path).map_err(|e| format!("Failed to decode {}: {e}", path.display()))?;
+    let (w, h) = (img.width(), img.height());
+    let (target_w, target_h) = stage_decode_bounds(w, h, max_edge);
+    let final_img = if (target_w, target_h) != (w, h) {
+        img.resize(target_w, target_h, FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgba = final_img.to_rgba8();
+    let (fw, fh) = rgba.dimensions();
+    Ok((fw, fh, rgba.into_raw()))
+}
+
 fn write_image(
     img: &DynamicImage,
     out_path: &Path,
@@ -406,7 +438,11 @@ fn write_image(
     Ok(out_path.to_path_buf())
 }
 
-fn run_magick_resize_convert(input: &Path, opts: &ProcessOptions, out: &Path) -> Result<(), String> {
+fn run_magick_resize_convert(
+    input: &Path,
+    opts: &ProcessOptions,
+    out: &Path,
+) -> Result<(), String> {
     let mut cmd = std::process::Command::new("magick");
     cmd.arg("convert").arg(input).arg("-auto-orient");
     if let Some(pct) = opts.percent {
@@ -477,9 +513,7 @@ impl ImageToolsService {
     }
 
     pub fn cache_enabled_and_ready(&self) -> bool {
-        self.cache
-            .as_ref()
-            .is_some_and(|cm| cm.enabled_and_ready())
+        self.cache.as_ref().is_some_and(|cm| cm.enabled_and_ready())
     }
 
     pub fn process_single(
@@ -554,10 +588,7 @@ impl ImageToolsService {
 
     /// Put originals into cache for paths (background-friendly; caller iterates).
     pub fn pre_cache_paths(&self, sources: &[PathBuf]) -> usize {
-        sources
-            .iter()
-            .filter(|src| self.pre_cache_one(src))
-            .count()
+        sources.iter().filter(|src| self.pre_cache_one(src)).count()
     }
 
     /// Materialize one optimized JPEG for feh fast viewing.
@@ -727,9 +758,7 @@ fn execute_op_to_path(source: &Path, op: &ImageOperation, dest: &Path) -> Result
             };
             process_image(source, &opts).map(|_| ())
         }
-        ImageOperation::Crop { geometry } => {
-            crop_image(source, geometry, dest).map(|_| ())
-        }
+        ImageOperation::Crop { geometry } => crop_image(source, geometry, dest).map(|_| ()),
         ImageOperation::Convert {
             target_format,
             quality,
@@ -751,6 +780,13 @@ mod tests {
     use super::*;
     use crate::types::CacheConfig;
 
+
+    fn test_scratch_dir(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(name)
+    }
+
     #[test]
     fn parse_crop_valid() {
         let r = parse_crop_geometry("800x600+100+50").unwrap();
@@ -768,5 +804,63 @@ mod tests {
             m.make_iri(&p, "resize", "p1"),
             m.make_iri(&p, "resize", "p1")
         );
+    }
+
+    #[test]
+    fn decode_stage_rgba_downscales_large_image() {
+        let dir = test_scratch_dir("rust-feh-decode-stage-large");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create a 3000x1500 test image (landscape)
+        let img = image::RgbaImage::new(3000, 1500);
+        let path = dir.join("large.png");
+        img.save(&path).unwrap();
+
+        // Decode with max_edge=1000 (should downscale to 1000x500)
+        let (w, h, bytes) = decode_stage_rgba(&path, 1000).unwrap();
+        assert_eq!(w, 1000);
+        assert_eq!(h, 500);
+        // RGBA is 4 bytes per pixel
+        assert_eq!(bytes.len(), (1000 * 500 * 4) as usize);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decode_stage_rgba_small_image_no_upscale() {
+        let dir = test_scratch_dir("rust-feh-decode-stage-small");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create a 100x80 test image
+        let img = image::RgbaImage::new(100, 80);
+        let path = dir.join("small.png");
+        img.save(&path).unwrap();
+
+        // Decode with max_edge=2048 (should not upscale, stays 100x80)
+        let (w, h, bytes) = decode_stage_rgba(&path, 2048).unwrap();
+        assert_eq!(w, 100);
+        assert_eq!(h, 80);
+        assert_eq!(bytes.len(), (100 * 80 * 4) as usize);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decode_stage_rgba_undecodable_file_returns_error() {
+        let dir = test_scratch_dir("rust-feh-decode-stage-invalid");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write garbage bytes (not a valid image)
+        let path = dir.join("garbage.jpg");
+        std::fs::write(&path, b"not a real image file garbage bytes").unwrap();
+
+        // Attempt to decode should return an error, not panic
+        let result = decode_stage_rgba(&path, 1000);
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
