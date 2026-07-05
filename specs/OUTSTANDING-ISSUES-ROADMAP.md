@@ -89,9 +89,9 @@ _Updated 2026-07-05 — records maintainer-arbitrated outcomes from the backlog 
 2. ~~006~~ — **complete**: window presets + persistence shipped (PR #144); T009 feh-geometry validated 2026-07-05 (scripted capture)
 3. ~~005, 008, 009, 011, 012, 013, 014~~ — **complete**
 4. ~~002~~ — **closed, superseded by 009**; ~~004~~ — **closed, absorbed by 011** (Clarifications recorded 2026-07-05)
-5. **NEXT: integration workstreams** (class C, briefs in `.agents/briefs/`, maintainer runs `/speckit-specify`):
-   a. caption/TagForge external-tool integration (likely **015**)
-   b. image-tools/imtools external-tool integration (likely **016**)
+5. Integration workstreams (class C, briefs in `.agents/briefs/`):
+   a. ~~caption/TagForge~~ — **specified as [015](./015-caption-tool-integration/spec.md), then DEFERRED** (maintainer, 2026-07-05: upstream prerequisites — local batch mode, LICENSE/tag)
+   b. image-tools/imtools external-tool integration (likely **016**) — not yet specified
 6. **Deferred by maintainer (2026-07-05)**: keyboard navigation; full config persistence — queued after the integration workstreams
 7. Residual manual clicks in 001 (V5 toggle, V6 debug-log, V3 step 4, V8 step 5) — pending maintainer choice: Xvfb session / 2-min manual run / waiver (notes in `001/tasks.md`)
 

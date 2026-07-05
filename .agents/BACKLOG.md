@@ -15,7 +15,7 @@ speckit-specify, human checkpoint). See ROUTING.md for the item → path map.
 | B-3 | Doc hygiene: roadmap reconciliation + closure recording | B | low | S | A-closures | todo |
 | B-4 | Fresh verification baseline (test/clippy/fmt/release) | B | low | XS | B-1 merged | todo |
 | B-5 | validation-results.md parity 005/008/009/013/014 | B | low | S | — | OPTIONAL, not committed |
-| C-1 | caption (TagForge) plugin — likely feature 015 | C | med-high | M | briefs approved; speckit-specify by maintainer | brief in .agents/briefs/ |
+| C-1 | caption (TagForge) integration — **specified as 015, then DEFERRED** (maintainer 2026-07-05; restart point = specs/015-caption-tool-integration/spec.md; prerequisites: upstream local batch mode, LICENSE/tag) | C | med-high | M | upstream caption work | deferred |
 | C-2 | image-tools (imtools) integration — likely feature 016 | C | high | L | C-1 learnings optional; speckit-specify by maintainer | brief in .agents/briefs/ |
 | C-3 | Keyboard navigation (docs roadmap: Planned) | C | low | M | after C-1/C-2 | DEFERRED (maintainer, 2026-07-05) |
 | C-4 | Full config persistence (docs roadmap: Partial; window presets shipped in 006) | C | low | M | after C-1/C-2 | DEFERRED (maintainer, 2026-07-05) |

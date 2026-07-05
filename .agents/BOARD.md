@@ -9,7 +9,7 @@ Status: todo | in-progress | blocked | done | verified
 | B-3 doc hygiene | lead | **done** | Roadmap implement-order refreshed; NEXT-ROUND 2026-07-05 addendum; 002/004 Clarifications + status closed; deferrals recorded |
 | B-4 verification baseline | lead | **done** | 122 pass / 0 fail / 2 ignored; release build pass; fmt/clippy local-unavailable (CI-enforced); details in ENV.md |
 | A-closure (001/003/006 + 002/004) | lead | **done** | 006 T009 pass (evidence); 003 fully closed; 001 now 69/69. T038/T050/T058 closed 2026-07-05 by waiver-backed evidence: GNOME Wayland blocked synthetic clicks and Xvfb is not installed locally, but code/automated proxies verify behavior; waived residue is click synthesis only. |
-| C-1 / C-2 briefs | lead | **done** | `.agents/briefs/caption-plugin.md`, `.agents/briefs/image-tools-merge.md` — ready for maintainer `/speckit-specify` |
+| C-1 / C-2 briefs | lead | **done** | C-1 caption: specified as 015 then **deferred** (maintainer 2026-07-05, recorded in spec Clarifications). C-2 image-tools: brief ready, not yet specified. |
 
 ## Evidence log
 - 2026-07-05: Branch audit — feat/window-viewer-stability-validation tree-identical to main

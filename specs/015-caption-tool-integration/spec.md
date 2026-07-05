@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-05
 
-**Status**: Draft
+**Status**: Deferred (maintainer decision 2026-07-05) — specified, not scheduled
 
 **Input**: User description: "Integrate the caption (TagForge) LoRA-dataset captioning toolkit as an external tool: from the rust-feh browser, discover a configured caption installation, launch its UI, and surface per-image caption sidecars. Direction and verified constraints per `.agents/briefs/caption-plugin.md` (2026-07-05): minimal subprocess integration via the existing external-tool capability pattern, local-first; the tool's current batch CLI performs REMOTE inference on a public hosting space, which conflicts with rust-feh's no-network positioning."
 
@@ -14,6 +14,7 @@
 
 - Q: Is batch-captioning dispatch (progress + cancel) in scope for 015? → A: **Deferred** — 015 ships detection, TagForge launch, and read-only sidecar surfacing only. Dispatch becomes its own follow-up feature once the caption tool grows a local batch mode upstream. (Maintainer decision.)
 - Q: Is the remote captioning path (public hosting space) permitted behind per-run consent? → A: **Excluded entirely** — rust-feh never invokes the remote path; captioning via rust-feh is local-only. Users wanting the remote CLI run it themselves outside rust-feh. (Maintainer decision.)
+- Q: Proceed to plan/tasks/implementation now? → A: **No — the whole feature is DEFERRED** (maintainer, 2026-07-05, during the plan phase): the accumulated prerequisites (upstream local batch mode, missing LICENSE/version tag in the caption repo, remote-only current CLI) make this the wrong time. This spec is the recorded restart point; do not generate plan/tasks until the maintainer reactivates it.
 
 ## User Scenarios & Testing *(mandatory)*
 
