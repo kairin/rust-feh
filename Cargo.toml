@@ -70,3 +70,7 @@ path = "tests/integration/desktop_tools_variations.rs"
 [[test]]
 name = "perf_sc_timing"
 path = "tests/perf/sc_timing.rs"
+
+[[test]]
+name = "feature_016_actions"
+path = "tests/integration/feature_016_actions.rs"

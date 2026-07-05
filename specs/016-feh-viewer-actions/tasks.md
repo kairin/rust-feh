@@ -25,7 +25,7 @@ Tests for core-module logic are mandatory (Constitution: Testing).
 - [x] T007 [US1] `src/ui_logic.rs`: loss-proof move — `plan_loss_proof_move` + `execute_move_plan` (copy→verify size→rename→remove; same-fs rename fast path; temp-file naming; cleanup-on-error reporting) + unit tests with tempdirs (cross-dir move, collision at destination, unwritable destination, source preserved on failure) — 2026-07-05: done via haiku-implementer; 4 tests green.
 - [x] T008 [US1] [P] `src/ui_logic.rs`: `save_copy_to(src, dest_dir)` collision-safe copy + unit tests — 2026-07-05: done via haiku-implementer (combined dispatch with T009); 4 tests green.
 - [x] T009 [US1] [P] `src/ui_logic.rs`: context-action outcome formatting for activity log (`format_action_outcome`) + unit tests — 2026-07-05: done via haiku-implementer (combined dispatch with T008); 5 tests green.
-- [ ] T010 [US1] Integration test `tests/integration/feature_016_actions.rs`: save-copy / move / resize-copy / convert against tempdir fixtures incl. spaces + non-ASCII names and duplicate-name destinations (SC-003, SC-004)
+- [x] T010 [US1] Integration test `tests/integration/feature_016_actions.rs`: save-copy / move / resize-copy / convert against tempdir fixtures incl. spaces + non-ASCII names and duplicate-name destinations (SC-003, SC-004) — 2026-07-05: done via haiku-implementer; registered as `[[test]] feature_016_actions` in Cargo.toml (orchestrator edit); 6 tests green.
 
 ### GUI wiring (thin, main.rs)
 
