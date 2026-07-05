@@ -780,6 +780,13 @@ mod tests {
     use super::*;
     use crate::types::CacheConfig;
 
+
+    fn test_scratch_dir(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(name)
+    }
+
     #[test]
     fn parse_crop_valid() {
         let r = parse_crop_geometry("800x600+100+50").unwrap();
@@ -801,7 +808,7 @@ mod tests {
 
     #[test]
     fn decode_stage_rgba_downscales_large_image() {
-        let dir = std::env::temp_dir().join("rust-feh-decode-stage-large");
+        let dir = test_scratch_dir("rust-feh-decode-stage-large");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -822,7 +829,7 @@ mod tests {
 
     #[test]
     fn decode_stage_rgba_small_image_no_upscale() {
-        let dir = std::env::temp_dir().join("rust-feh-decode-stage-small");
+        let dir = test_scratch_dir("rust-feh-decode-stage-small");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -842,7 +849,7 @@ mod tests {
 
     #[test]
     fn decode_stage_rgba_undecodable_file_returns_error() {
-        let dir = std::env::temp_dir().join("rust-feh-decode-stage-invalid");
+        let dir = test_scratch_dir("rust-feh-decode-stage-invalid");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

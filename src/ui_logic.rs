@@ -1546,6 +1546,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
+
+    fn test_scratch_dir(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(name)
+    }
+
     fn entry(path: &str) -> ImageEntry {
         ImageEntry::new(PathBuf::from(path))
     }
@@ -1895,7 +1902,7 @@ mod tests {
 
     #[test]
     fn collision_suffixed_path_no_collision_returns_unchanged() {
-        let dir = std::env::temp_dir().join("rust-feh-collision-test-1");
+        let dir = test_scratch_dir("rust-feh-collision-test-1");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let result = collision_suffixed_path(&dir, "photo.jpg");
@@ -1905,7 +1912,7 @@ mod tests {
 
     #[test]
     fn collision_suffixed_path_existing_name_gets_dash_one() {
-        let dir = std::env::temp_dir().join("rust-feh-collision-test-2");
+        let dir = test_scratch_dir("rust-feh-collision-test-2");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
@@ -1916,7 +1923,7 @@ mod tests {
 
     #[test]
     fn collision_suffixed_path_fills_gap() {
-        let dir = std::env::temp_dir().join("rust-feh-collision-test-3");
+        let dir = test_scratch_dir("rust-feh-collision-test-3");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
@@ -1928,7 +1935,7 @@ mod tests {
 
     #[test]
     fn collision_suffixed_path_dotfile_no_extension_split() {
-        let dir = std::env::temp_dir().join("rust-feh-collision-test-4");
+        let dir = test_scratch_dir("rust-feh-collision-test-4");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".bashrc"), b"x").unwrap();
@@ -1939,7 +1946,7 @@ mod tests {
 
     #[test]
     fn collision_suffixed_path_no_extension() {
-        let dir = std::env::temp_dir().join("rust-feh-collision-test-5");
+        let dir = test_scratch_dir("rust-feh-collision-test-5");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("README"), b"x").unwrap();
@@ -1950,7 +1957,7 @@ mod tests {
 
     #[test]
     fn collision_suffixed_path_non_ascii() {
-        let dir = std::env::temp_dir().join("rust-feh-collision-test-6");
+        let dir = test_scratch_dir("rust-feh-collision-test-6");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("café-été.jpg"), b"x").unwrap();
@@ -2072,7 +2079,7 @@ mod tests {
 
     #[test]
     fn loss_proof_move_same_dir_or_same_fs_succeeds() {
-        let temp_base = std::env::temp_dir().join("rust-feh-move-test-1");
+        let temp_base = test_scratch_dir("rust-feh-move-test-1");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2107,7 +2114,7 @@ mod tests {
 
     #[test]
     fn loss_proof_move_collision_at_destination_gets_suffixed() {
-        let temp_base = std::env::temp_dir().join("rust-feh-move-test-2");
+        let temp_base = test_scratch_dir("rust-feh-move-test-2");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2143,7 +2150,7 @@ mod tests {
 
     #[test]
     fn loss_proof_move_unwritable_destination_preserves_source() {
-        let temp_base = std::env::temp_dir().join("rust-feh-move-test-3");
+        let temp_base = test_scratch_dir("rust-feh-move-test-3");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2189,7 +2196,7 @@ mod tests {
 
     #[test]
     fn loss_proof_move_source_preserved_on_verification_failure() {
-        let temp_base = std::env::temp_dir().join("rust-feh-move-test-4");
+        let temp_base = test_scratch_dir("rust-feh-move-test-4");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2219,7 +2226,7 @@ mod tests {
 
     #[test]
     fn save_copy_to_basic_copy() {
-        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-1");
+        let temp_base = test_scratch_dir("rust-feh-copy-test-1");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2250,7 +2257,7 @@ mod tests {
 
     #[test]
     fn save_copy_to_collision_gets_suffixed() {
-        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-2");
+        let temp_base = test_scratch_dir("rust-feh-copy-test-2");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2287,7 +2294,7 @@ mod tests {
 
     #[test]
     fn save_copy_to_non_ascii_name() {
-        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-3");
+        let temp_base = test_scratch_dir("rust-feh-copy-test-3");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2317,7 +2324,7 @@ mod tests {
 
     #[test]
     fn save_copy_to_missing_source_returns_error() {
-        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-4");
+        let temp_base = test_scratch_dir("rust-feh-copy-test-4");
         let _ = std::fs::remove_dir_all(&temp_base);
         std::fs::create_dir_all(&temp_base).unwrap();
 
@@ -2559,7 +2566,7 @@ mod tests {
 
     #[test]
     fn validate_handoff_accepts_exact_match_in_filelist() {
-        let dir = std::env::temp_dir().join("rust-feh-handoff-accept");
+        let dir = test_scratch_dir("rust-feh-handoff-accept");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.jpg");
@@ -2574,7 +2581,7 @@ mod tests {
 
     #[test]
     fn validate_handoff_rejects_path_not_in_filelist() {
-        let dir = std::env::temp_dir().join("rust-feh-handoff-notin");
+        let dir = test_scratch_dir("rust-feh-handoff-notin");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.jpg");
@@ -2607,7 +2614,7 @@ mod tests {
 
     #[test]
     fn validate_handoff_rejects_symlink_escape_attempt() {
-        let base = std::env::temp_dir().join("rust-feh-handoff-symlink");
+        let base = test_scratch_dir("rust-feh-handoff-symlink");
         let _ = std::fs::remove_dir_all(&base);
         let trusted = base.join("trusted");
         let outside = base.join("outside");
@@ -2633,7 +2640,7 @@ mod tests {
 
     #[test]
     fn validate_handoff_deleted_image_falls_back_to_nearest_surviving_neighbor() {
-        let dir = std::env::temp_dir().join("rust-feh-handoff-deleted");
+        let dir = test_scratch_dir("rust-feh-handoff-deleted");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let files: Vec<PathBuf> = (1..=5).map(|i| dir.join(format!("{i}.jpg"))).collect();
@@ -2656,7 +2663,7 @@ mod tests {
 
     #[test]
     fn validate_handoff_trims_trailing_newline() {
-        let dir = std::env::temp_dir().join("rust-feh-handoff-newline");
+        let dir = test_scratch_dir("rust-feh-handoff-newline");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.jpg");
@@ -2670,7 +2677,7 @@ mod tests {
 
     #[test]
     fn validate_handoff_only_reads_first_line() {
-        let dir = std::env::temp_dir().join("rust-feh-handoff-firstline");
+        let dir = test_scratch_dir("rust-feh-handoff-firstline");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.jpg");
