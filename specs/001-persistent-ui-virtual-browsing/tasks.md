@@ -80,7 +80,7 @@
 
 ### Validate US1
 
-- [ ] T026 [US1] Run quickstart.md V1 validation scenario end-to-end
+- [x] T026 [US1] Run quickstart.md V1 validation scenario end-to-end — **pass 2026-07-05** (scripted GUI session): app loaded 5,000-image fixture via `RUST_FEH_START_FOLDER`; folder path, filter box, recursive checkbox, rescan button, and action buttons (Open in feh, Quick resize) all visible with list populated (evidence: `evidence/20260705-v1-controls-5k.png`)
 - [x] T027 [US1] Fix any remaining US1 gaps from T004 audit in `src/main.rs` (FR-001, FR-002, FR-003, FR-006, FR-011)
 
 **Checkpoint**: US1 independently verifiable.
@@ -111,7 +111,7 @@
 
 - [x] T036 [US2] Run quickstart.md V2: 10k scroll smooth, RSS under 150MB — **pass 2026-06-28**: 10k rapid scrollbar drag smooth (user-confirmed); RSS peak 142.8 MB < 150 MB (see specs/003-gui-performance-validation/validation-results.md)
 - [x] T037 [US2] Run quickstart.md V4: filter counter accuracy, 0-match case, empty dir per FR-005/FR-006 — **pass**: covered by tests `v4_counter_formats`, `filter_zero_match`, `filter_empty_returns_all`, `showing_count_format`
-- [ ] T038 [US2] Run quickstart.md V5: recursive toggle rescans correctly per FR-010 (auto proxy: `v5_recursive_scan_includes_subdirs`; manual GUI toggle still unrun)
+- [ ] T038 [US2] Run quickstart.md V5: recursive toggle rescans correctly per FR-010 (auto proxy: `v5_recursive_scan_includes_subdirs`; manual GUI toggle still unrun) — **2026-07-05 note**: scripted session could not drive the toggle click (GNOME Wayland blocks synthetic XWayland input); residue is the GUI click only, logic covered by the auto proxy test. Options surfaced to maintainer: Xvfb session / 2-min manual run / waiver
 - [x] T039 [US2] Measure filter response from last keystroke — MUST be under 200ms per SC-003 — **pass**: covered by test `sc003_filter_10k_under_200ms`
 - [x] T040 [US2] Fix any remaining US2 gaps from T004 audit in `src/main.rs` (FR-004, FR-005, FR-010, FR-013)
 
@@ -142,8 +142,8 @@
 
 ### Validate US3
 
-- [ ] T050 [US3] Run quickstart.md V3: no auto-feh, explicit open works per SC-005
-- [ ] T051 [US3] Run quickstart.md V8: feh missing — disabled buttons, no spawn per SC-007
+- [ ] T050 [US3] Run quickstart.md V3: no auto-feh, explicit open works per SC-005 — **2026-07-05 partial pass** (scripted GUI session): steps 1–3 validated — first image auto-highlighted, "Image actions — photo_00000.jpg" shown, `pgrep feh` empty after load (no auto-launch, FR-007). Step 4 (click "Open in feh") not drivable in this environment; spawn args covered by `spawn_feh_viewer` + feature-014 integration test. Options surfaced to maintainer: Xvfb session / 2-min manual run / waiver
+- [x] T051 [US3] Run quickstart.md V8: feh missing — disabled buttons, no spawn per SC-007 — **pass 2026-07-05** (scripted GUI session, `PATH=/nonexistent`): session status shows "feh not found — install with `sudo apt install feh`" (FR-008a) with 5,000 images loaded; feh-dependent buttons render unavailable-style (`feh_button` inactive fill); no spawn possible with feh absent (evidence: `evidence/20260705-v8-feh-missing-hint.png`). Residual: step 5 click-feedback not drivable in this environment
 - [x] T052 [US3] Fix any remaining US3 gaps from T004 audit in `src/main.rs` (FR-007, FR-008, FR-008a, FR-008b, FR-012)
 
 **Checkpoint**: US3 independently verifiable.
@@ -156,10 +156,10 @@
 
 - [x] T053 [P] Verify debug log collapsible, collapsed by default, empty state "(no debug messages yet)" per FR-009 in `src/main.rs`
 - [x] T054 [P] Verify Quick resize error shows "Process error: …" in status per FR-014 in `src/main.rs`
-- [ ] T055 [P] Verify scanner skip warnings appear in debug log per FR-015 (permission-denied subdir test)
+- [x] T055 [P] Verify scanner skip warnings appear in debug log per FR-015 (permission-denied subdir test) — **closed 2026-07-05 as superseded by T068 automation** (`t069_scan_skip_non_permission` + scanner warning tests green; per NEXT-ROUND-CONSOLIDATED stale-task audit, maintainer confirmed)
 - [x] T056 [P] Remove or implement dead code: `Selection` and `SortMode` in `src/types.rs` — **resolved 2026-06-28**: `Selection` type removed (no longer in `src/types.rs`); `SortMode` is fully implemented and used in `src/ui_logic.rs` (`sort_mode_label`, `sort_key`, `sort` API) with tests `sort_by_name_orders_filenames`/`sort_by_folder_groups_directories`
 - [x] T057 [P] Remove commented tokio/flume lines from `src/main.rs:50` if not planned this phase
-- [ ] T058 Run quickstart.md V6: debug log functional, expandable, clearable
+- [ ] T058 Run quickstart.md V6: debug log functional, expandable, clearable — **2026-07-05 note**: activity log visibly records events ("Activity log — 9 events" in scripted-session screenshot); expand/clear clicks not drivable in this environment (GNOME Wayland blocks synthetic input). Options surfaced to maintainer: Xvfb session / 2-min manual run / waiver
 - [x] T059 [P] Update `README.md` with persistent layout, virtualized list, selection model, feh degradation
 - [x] T060 Verify `Cargo.toml` has no new dependencies beyond existing set per Constitution §II
 - [x] T061 Final clippy: `cargo clippy -- -D warnings` — zero warnings

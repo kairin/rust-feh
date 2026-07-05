@@ -4,11 +4,17 @@
 
 **Created**: 2026-06-21
 
-**Status**: Draft
+**Status**: Closed — superseded (maintainer confirmed 2026-07-05)
 
 **Input**: Outstanding issue **A5** from feature 001 — `feh_available` is detected once at startup; if the user installs feh while rust-feh is running, buttons stay disabled until restart.
 
 **Superseded by**: [009-external-tool-runtime](../009-external-tool-runtime/spec.md) (2026-06-22) — unified feh + ImageMagick recheck. This spec retained for traceability only; implement via **009**, not **002**.
+
+## Clarifications
+
+### Session 2026-07-05
+
+- Q: Is 002 already satisfied by shipped work, obsolete, or in need of plan+tasks? → A: **Closed as superseded by 009** (which shipped complete, 22/22 tasks, including feh + ImageMagick runtime recheck and spawn-failure recovery T015–T019). Decision made by the human maintainer during the 2026-07-05 backlog audit, satisfying the 007 FR-006 advisory rule (human maintainer = final arbitration). No plan/tasks will be generated for 002.
 
 **Parent**: [001-persistent-ui-virtual-browsing](../001-persistent-ui-virtual-browsing/spec.md) (FR-008a, FR-008b)
 
