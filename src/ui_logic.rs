@@ -73,6 +73,156 @@ pub fn feh_entry_filelist_path(entry_id: &str) -> PathBuf {
     runtime_cache_dir().join(format!("filelist-{}-{}.txt", std::process::id(), entry_id))
 }
 
+/// POSIX single-quote escaping: wrap `s` in single quotes and replace every
+/// embedded `'` with the `'\''` sequence (close-quote, escaped literal quote,
+/// reopen-quote). The result is a single shell word that a POSIX `/bin/sh -c`
+/// reproduces byte-for-byte, no matter what metacharacters `s` contains.
+///
+/// This is the ONLY place rust-feh emits shell syntax, and only for the VALUE
+/// of feh's `--info` argument (which feh itself later runs via its own internal
+/// `/bin/sh -c`). rust-feh never hands a shell a command line of its own.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Build the exact round-trip viewer invocation (contract:
+/// `contracts/viewer-roundtrip.md`, research R1/R2) as an **argument vector**.
+///
+/// Returns `(program, args, envs)` where every element of `args` is one
+/// separate argument, to be passed to `std::process::Command::arg`/`args`
+/// individually. rust-feh NEVER concatenates these into a single shell command
+/// line — no shell parses them on the rust-feh side, so `filelist_path` and
+/// `start_at` need (and receive) no escaping and pass through verbatim even
+/// when they contain shell metacharacters, spaces, or quotes.
+///
+/// The single `--info` argument's VALUE is a shell command string, because feh
+/// runs it through feh's own `/bin/sh -c` for every displayed image. Only the
+/// `handoff_path` interpolated into that value is shell-quoted (defensively; in
+/// practice it is always rust-feh-generated from `runtime_cache_dir()`).
+pub fn viewer_spawn_command(
+    filelist_path: &Path,
+    start_at: &Path,
+    handoff_path: &Path,
+    profile_dir: &Path,
+) -> (String, Vec<String>, Vec<(String, String)>) {
+    let info_command = format!(
+        "echo %F > {}",
+        shell_single_quote(&handoff_path.display().to_string())
+    );
+    let args = vec![
+        "--geometry".to_string(),
+        FEH_VIEWER_GEOMETRY.to_string(),
+        "--scale-down".to_string(),
+        "--zoom".to_string(),
+        FEH_VIEWER_ZOOM.to_string(),
+        "--info".to_string(),
+        info_command,
+        "--filelist".to_string(),
+        filelist_path.display().to_string(),
+        "--start-at".to_string(),
+        start_at.display().to_string(),
+    ];
+    let envs = vec![(
+        "XDG_CONFIG_HOME".to_string(),
+        profile_dir.display().to_string(),
+    )];
+    ("feh".to_string(), args, envs)
+}
+
+/// Find the index of the filelist entry that a handoff candidate path resolves
+/// to, or `None`. Membership in the filelist rust-feh itself wrote is the trust
+/// gate (research R4): a handoff value is accepted ONLY if it names a path
+/// already in the launched filelist.
+///
+/// Primary check canonicalizes both the candidate and each entry (resolving
+/// symlinks and `..`) and compares — this is what defeats symlink-escape and
+/// path-traversal: a candidate that superficially sits "inside" a trusted
+/// directory but canonically resolves elsewhere matches no entry and is
+/// rejected. If the candidate cannot be canonicalized (e.g. the file was
+/// deleted between display and read-back — a legitimate failure mode), fall
+/// back to a RAW path comparison against the raw filelist, which still bounds
+/// acceptance to paths already in the trusted list and so does not reopen the
+/// symlink hole.
+fn matching_filelist_index(candidate: &Path, filelist: &[PathBuf]) -> Option<usize> {
+    match candidate.canonicalize() {
+        Ok(canon_candidate) => filelist
+            .iter()
+            .position(|entry| entry.canonicalize().is_ok_and(|c| c == canon_candidate)),
+        Err(_) => filelist.iter().position(|entry| entry == candidate),
+    }
+}
+
+/// Starting at `index`, return the nearest filelist entry that still exists on
+/// disk, expanding outward as index-1, index+1, index-2, index+2, … (contract
+/// "handoff image deleted meanwhile" → nearest surviving neighbor). Returns the
+/// entry at `index` itself if it exists; `None` if nothing in the list survives.
+fn nearest_surviving_neighbor(filelist: &[PathBuf], index: usize) -> Option<PathBuf> {
+    if index >= filelist.len() {
+        return None;
+    }
+    if filelist[index].exists() {
+        return Some(filelist[index].clone());
+    }
+    let n = filelist.len();
+    let mut offset = 1usize;
+    loop {
+        let mut progressed = false;
+        if index >= offset {
+            progressed = true;
+            let li = index - offset;
+            if filelist[li].exists() {
+                return Some(filelist[li].clone());
+            }
+        }
+        if index + offset < n {
+            progressed = true;
+            let ri = index + offset;
+            if filelist[ri].exists() {
+                return Some(filelist[ri].clone());
+            }
+        }
+        if !progressed {
+            return None;
+        }
+        offset += 1;
+    }
+}
+
+/// Validate the UNTRUSTED handoff file content feh wrote (contract "Exit
+/// handling"/"Failure modes", research R4). `content` is raw bytes-as-str read
+/// from a file an external process wrote; it is never trusted blindly.
+///
+/// Returns the trusted filelist `PathBuf` to select (never the raw untrusted
+/// string), or `None` when the content should be ignored. Steps:
+/// 1. take only the first line, trimmed; empty → `None`;
+/// 2. resolve it to a filelist entry via `matching_filelist_index`
+///    (canonicalize-and-compare, with a raw-compare fallback for deleted files);
+///    no match → `None`;
+/// 3. return that entry if it still exists, else its nearest surviving
+///    neighbor; `None` if the whole list is gone.
+///
+/// Logging of rejected/accepted round-trips is the caller's responsibility
+/// (main.rs); this function never echoes untrusted content.
+pub fn validate_handoff(content: &str, filelist: &[PathBuf]) -> Option<PathBuf> {
+    let first_line = content.lines().next()?.trim();
+    if first_line.is_empty() {
+        return None;
+    }
+    let candidate = Path::new(first_line);
+    let index = matching_filelist_index(candidate, filelist)?;
+    nearest_surviving_neighbor(filelist, index)
+}
+
 /// Scratch directory for Prepare Fast materialized JPEGs (session-scoped).
 pub fn prepare_fast_work_dir() -> PathBuf {
     runtime_cache_dir().join(format!("prepare-fast-{}", std::process::id()))
@@ -2234,5 +2384,255 @@ mod tests {
                 assert_ne!(labels[i], labels[j], "labels should be distinct");
             }
         }
+    }
+
+    // ---- Feature 016 T015: viewer_spawn_command (argument-vector safety) ----
+
+    #[test]
+    fn viewer_spawn_command_produces_expected_argument_vector() {
+        let (program, args, envs) = viewer_spawn_command(
+            Path::new("/tmp/rust-feh/filelist-1.txt"),
+            Path::new("/home/user/pics/photo.jpg"),
+            Path::new("/tmp/rust-feh/handoff-1"),
+            Path::new("/home/user/.config/rust-feh/viewer-profile"),
+        );
+        assert_eq!(program, "feh");
+        assert_eq!(
+            args,
+            vec![
+                "--geometry".to_string(),
+                FEH_VIEWER_GEOMETRY.to_string(),
+                "--scale-down".to_string(),
+                "--zoom".to_string(),
+                FEH_VIEWER_ZOOM.to_string(),
+                "--info".to_string(),
+                "echo %F > '/tmp/rust-feh/handoff-1'".to_string(),
+                "--filelist".to_string(),
+                "/tmp/rust-feh/filelist-1.txt".to_string(),
+                "--start-at".to_string(),
+                "/home/user/pics/photo.jpg".to_string(),
+            ]
+        );
+        assert_eq!(
+            envs,
+            vec![(
+                "XDG_CONFIG_HOME".to_string(),
+                "/home/user/.config/rust-feh/viewer-profile".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn viewer_spawn_command_never_builds_a_shell_string_for_the_whole_invocation() {
+        let filelist = "/tmp/list.txt";
+        let start_at = "/tmp/pics/start.jpg";
+        let handoff = "/tmp/handoff-xyz";
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new(filelist),
+            Path::new(start_at),
+            Path::new(handoff),
+            Path::new("/tmp/profile"),
+        );
+        // The invocation is many separate arguments, never one joined shell line.
+        assert!(
+            args.len() > 1,
+            "expected an argument vector, not one string"
+        );
+        // No single argument concatenates more than one of the three distinct
+        // paths — proving they never get glued together into shell-parsed text.
+        for arg in &args {
+            let count = [filelist, start_at, handoff]
+                .into_iter()
+                .filter(|needle| arg.contains(*needle))
+                .count();
+            assert!(
+                count <= 1,
+                "argument {arg:?} concatenates multiple distinct paths"
+            );
+        }
+    }
+
+    #[test]
+    fn viewer_spawn_command_handles_adversarial_filenames_in_filelist_and_start_at_paths() {
+        let adversarial = "/tmp/weird; rm -rf ~ $(whoami) \"quoted\" 'single'.jpg";
+        let filelist = "/tmp/evil dir; touch pwned/filelist.txt";
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new(filelist),
+            Path::new(adversarial),
+            Path::new("/tmp/rust-feh/handoff-2"),
+            Path::new("/tmp/profile"),
+        );
+        // --start-at value is the path VERBATIM: it is its own arg-vector element,
+        // not shell-parsed text, so it receives no escaping and no truncation.
+        let start_idx = args.iter().position(|a| a == "--start-at").unwrap();
+        assert_eq!(args[start_idx + 1], adversarial);
+        // --filelist value is likewise verbatim.
+        let fl_idx = args.iter().position(|a| a == "--filelist").unwrap();
+        assert_eq!(args[fl_idx + 1], filelist);
+        // Same total arg count/shape as the ordinary case: the adversarial
+        // content did not fracture into extra or fewer arguments.
+        assert_eq!(args.len(), 11);
+    }
+
+    #[test]
+    fn viewer_spawn_command_shell_quotes_handoff_path_in_info_command() {
+        let handoff = "/tmp/rust-feh/handoff-o'brien-1";
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new("/tmp/list.txt"),
+            Path::new("/tmp/start.jpg"),
+            Path::new(handoff),
+            Path::new("/tmp/profile"),
+        );
+        let info_idx = args.iter().position(|a| a == "--info").unwrap();
+        let info = &args[info_idx + 1];
+        // POSIX single-quote escaping of the embedded quote: close, escaped
+        // literal quote, reopen. A real `sh -c` would treat the path as one
+        // intact argument.
+        assert!(
+            info.contains("'\\''"),
+            "info value not POSIX-escaped: {info}"
+        );
+        assert_eq!(info, "echo %F > '/tmp/rust-feh/handoff-o'\\''brien-1'");
+    }
+
+    #[test]
+    fn viewer_spawn_command_uses_geometry_and_zoom_constants() {
+        let (_program, args, _envs) = viewer_spawn_command(
+            Path::new("/tmp/list.txt"),
+            Path::new("/tmp/start.jpg"),
+            Path::new("/tmp/handoff"),
+            Path::new("/tmp/profile"),
+        );
+        let g_idx = args.iter().position(|a| a == "--geometry").unwrap();
+        assert_eq!(args[g_idx + 1], FEH_VIEWER_GEOMETRY);
+        let z_idx = args.iter().position(|a| a == "--zoom").unwrap();
+        assert_eq!(args[z_idx + 1], FEH_VIEWER_ZOOM);
+    }
+
+    // ---- Feature 016 T016: validate_handoff (untrusted-input validation) ----
+
+    #[test]
+    fn validate_handoff_accepts_exact_match_in_filelist() {
+        let dir = std::env::temp_dir().join("rust-feh-handoff-accept");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        let b = dir.join("b.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        let filelist = vec![a.clone(), b.clone()];
+        let content = b.display().to_string();
+        assert_eq!(validate_handoff(&content, &filelist), Some(b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_rejects_path_not_in_filelist() {
+        let dir = std::env::temp_dir().join("rust-feh-handoff-notin");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        let outsider = dir.join("outsider.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        // Real, existing file — but membership in the filelist is the gate, not
+        // mere existence.
+        std::fs::write(&outsider, b"x").unwrap();
+        let filelist = vec![a];
+        let content = outsider.display().to_string();
+        assert_eq!(validate_handoff(&content, &filelist), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_rejects_garbage_content() {
+        let filelist = vec![PathBuf::from("/tmp/whatever/a.jpg")];
+        assert_eq!(
+            validate_handoff("\x00not a path!! $(whoami)", &filelist),
+            None
+        );
+    }
+
+    #[test]
+    fn validate_handoff_rejects_empty_content() {
+        let filelist = vec![PathBuf::from("/tmp/a.jpg")];
+        assert_eq!(validate_handoff("", &filelist), None);
+        assert_eq!(validate_handoff("   \n  \t", &filelist), None);
+    }
+
+    #[test]
+    fn validate_handoff_rejects_symlink_escape_attempt() {
+        let base = std::env::temp_dir().join("rust-feh-handoff-symlink");
+        let _ = std::fs::remove_dir_all(&base);
+        let trusted = base.join("trusted");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&trusted).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let real = trusted.join("real.jpg");
+        std::fs::write(&real, b"x").unwrap();
+        let secret = outside.join("secret.jpg");
+        std::fs::write(&secret, b"x").unwrap();
+        // A symlink that superficially sits inside the trusted dir but points at
+        // the outside file.
+        let link = trusted.join("link.jpg");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        // Filelist contains only the genuinely-trusted real file.
+        let filelist = vec![real];
+        let content = link.display().to_string();
+        // link canonicalizes to outside/secret.jpg, which no filelist entry
+        // canonically equals -> rejected. This is the canonicalize-and-compare
+        // defense defeating the escape.
+        assert_eq!(validate_handoff(&content, &filelist), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn validate_handoff_deleted_image_falls_back_to_nearest_surviving_neighbor() {
+        let dir = std::env::temp_dir().join("rust-feh-handoff-deleted");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = (1..=5).map(|i| dir.join(format!("{i}.jpg"))).collect();
+        for f in &files {
+            std::fs::write(f, b"x").unwrap();
+        }
+        // Delete the 3rd file AFTER building the filelist: its raw path still
+        // matches the filelist (canonicalize fails, raw fallback succeeds), but
+        // the file itself is gone.
+        std::fs::remove_file(&files[2]).unwrap();
+        let content = files[2].display().to_string();
+        let result = validate_handoff(&content, &files).expect("expected a surviving neighbor");
+        assert_ne!(result, files[2], "must not return the deleted path");
+        assert!(
+            result == files[1] || result == files[3],
+            "expected nearest surviving neighbor (files[1] or files[3]), got {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_trims_trailing_newline() {
+        let dir = std::env::temp_dir().join("rust-feh-handoff-newline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        let filelist = vec![a.clone()];
+        // echo's trailing newline, the realistic case.
+        let content = format!("{}\n", a.display());
+        assert_eq!(validate_handoff(&content, &filelist), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_handoff_only_reads_first_line() {
+        let dir = std::env::temp_dir().join("rust-feh-handoff-firstline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.jpg");
+        std::fs::write(&a, b"x").unwrap();
+        let filelist = vec![a.clone()];
+        // Valid path on line 1, appended garbage after (corrupted/appended file).
+        let content = format!("{}\n/etc/passwd\ngarbage line\n", a.display());
+        assert_eq!(validate_handoff(&content, &filelist), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
