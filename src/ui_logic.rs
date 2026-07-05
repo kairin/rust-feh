@@ -2,8 +2,9 @@
 //! Pure UI/business logic testable without egui (feature 001 validation).
 
 use crate::types::{
-    ActionPrefs, AssetStatus, FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode,
-    OutputPolicy, ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
+    ActionKind, ActionOutcome, ActionPrefs, ActionResult, AssetStatus, ContextAction,
+    FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode, OutputPolicy,
+    ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
@@ -1091,6 +1092,37 @@ pub fn format_image_tools_log(result: &ProcessedResult) -> String {
     )
 }
 
+fn action_kind_label(kind: &ActionKind) -> &'static str {
+    match kind {
+        ActionKind::Context(ContextAction::SaveCopyTo) => "Save a copy",
+        ActionKind::Context(ContextAction::MoveTo) => "Move",
+        ActionKind::Context(ContextAction::ResizeCopy) => "Resize copy",
+        ActionKind::Context(ContextAction::ConvertFormat) => "Convert format",
+        ActionKind::Context(ContextAction::CopyPath) => "Copy path",
+        ActionKind::Context(ContextAction::CopyImage) => "Copy image",
+        ActionKind::RoundTrip => "Round trip",
+    }
+}
+
+/// Format one `ActionOutcome` as a single human-readable activity-log line
+/// (feature 016, FR-010). Never echoes untrusted content verbatim; this only
+/// ever receives already-validated paths/reasons produced by this codebase.
+pub fn format_action_outcome(outcome: &ActionOutcome) -> String {
+    let label = action_kind_label(&outcome.action);
+    match &outcome.result {
+        ActionResult::Ok { produced } => {
+            let target = produced.as_ref().or(outcome.destination.as_ref());
+            match target {
+                Some(p) => format!("{label}: {} -> {}", outcome.image.display(), p.display()),
+                None => format!("{label}: {}", outcome.image.display()),
+            }
+        }
+        ActionResult::Err { reason } => {
+            format!("{label} failed: {} — {reason}", outcome.image.display())
+        }
+    }
+}
+
 pub struct JobProgress {
     pub current: usize,
     pub total: usize,
@@ -1175,6 +1207,39 @@ pub fn collision_suffixed_path(dest_dir: &Path, file_name: &str) -> PathBuf {
         }
         suffix += 1;
     }
+}
+
+/// Collision-safe copy of `src` into `dest_dir` (feature 016, FR-004). Verifies
+/// the copy's byte length matches the source before returning; never overwrites
+/// an existing file at the destination.
+pub fn save_copy_to(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| format!("Source has no file name: {}", src.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let dest = collision_suffixed_path(dest_dir, &file_name);
+    let src_len = std::fs::metadata(src)
+        .map_err(|e| format!("Failed to read source metadata {}: {e}", src.display()))?
+        .len();
+    std::fs::copy(src, &dest).map_err(|e| {
+        format!(
+            "Failed to copy {} to {}: {e}",
+            src.display(),
+            dest.display()
+        )
+    })?;
+    let copied_len = std::fs::metadata(&dest)
+        .map_err(|e| format!("Failed to verify copy at {}: {e}", dest.display()))?
+        .len();
+    if copied_len != src_len {
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!(
+            "Copy verification failed for {}: copied {copied_len} bytes, expected {src_len}",
+            src.display()
+        ));
+    }
+    Ok(dest)
 }
 
 /// A planned loss-proof move: the exact source, final destination (already
@@ -1954,5 +2019,220 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_basic_copy() {
+        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-1");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"test file content";
+        std::fs::write(&src, content).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir).unwrap();
+
+        assert!(result.exists(), "destination should exist");
+        assert!(src.exists(), "source should still exist after copy");
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            content,
+            "destination content should match source"
+        );
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            content,
+            "source content should be unchanged"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_collision_gets_suffixed() {
+        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-2");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("photo.jpg");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let src_content = b"A";
+        let existing_content = b"B";
+        std::fs::write(&src, src_content).unwrap();
+        std::fs::write(dest_dir.join("photo.jpg"), existing_content).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir).unwrap();
+
+        assert_eq!(
+            result,
+            dest_dir.join("photo-1.jpg"),
+            "collision should result in -1 suffix"
+        );
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            src_content,
+            "new file should have source content"
+        );
+        assert_eq!(
+            std::fs::read(dest_dir.join("photo.jpg")).unwrap(),
+            existing_content,
+            "existing photo.jpg should be untouched"
+        );
+        assert!(src.exists(), "source should still exist after copy");
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_non_ascii_name() {
+        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-3");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("café.jpg");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"image data";
+        std::fs::write(&src, content).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir).unwrap();
+
+        assert!(result.exists(), "destination should exist");
+        assert_eq!(
+            result.file_name().unwrap().to_string_lossy(),
+            "café.jpg",
+            "filename should preserve non-ASCII characters"
+        );
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            content,
+            "destination content should match source"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn save_copy_to_missing_source_returns_error() {
+        let temp_base = std::env::temp_dir().join("rust-feh-copy-test-4");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("nonexistent.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let result = save_copy_to(&src, &dest_dir);
+
+        assert!(result.is_err(), "should return error for missing source");
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn format_action_outcome_ok_with_produced() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: None,
+            result: ActionResult::Ok {
+                produced: Some(PathBuf::from("/b/photo.jpg")),
+            },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("Save a copy"));
+        assert!(formatted.contains("/a/photo.jpg"));
+        assert!(formatted.contains("/b/photo.jpg"));
+    }
+
+    #[test]
+    fn format_action_outcome_ok_no_produced_falls_back_to_destination() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: Some(PathBuf::from("/b")),
+            result: ActionResult::Ok { produced: None },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("Save a copy"));
+        assert!(formatted.contains("/b"));
+    }
+
+    #[test]
+    fn format_action_outcome_err_includes_reason() {
+        let outcome = ActionOutcome {
+            action: ActionKind::Context(ContextAction::SaveCopyTo),
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: None,
+            result: ActionResult::Err {
+                reason: "disk full".into(),
+            },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("failed"));
+        assert!(formatted.contains("disk full"));
+    }
+
+    #[test]
+    fn format_action_outcome_round_trip_label() {
+        let outcome = ActionOutcome {
+            action: ActionKind::RoundTrip,
+            image: PathBuf::from("/a/photo.jpg"),
+            destination: None,
+            result: ActionResult::Ok { produced: None },
+        };
+
+        let formatted = format_action_outcome(&outcome);
+
+        assert!(formatted.contains("Round trip"));
+    }
+
+    #[test]
+    fn format_action_outcome_covers_all_context_actions() {
+        let actions = vec![
+            ContextAction::SaveCopyTo,
+            ContextAction::MoveTo,
+            ContextAction::ResizeCopy,
+            ContextAction::ConvertFormat,
+            ContextAction::CopyPath,
+            ContextAction::CopyImage,
+        ];
+
+        let mut labels = Vec::new();
+        for action in actions {
+            let outcome = ActionOutcome {
+                action: ActionKind::Context(action),
+                image: PathBuf::from("/a/photo.jpg"),
+                destination: None,
+                result: ActionResult::Ok { produced: None },
+            };
+
+            let formatted = format_action_outcome(&outcome);
+            assert!(
+                !formatted.is_empty(),
+                "formatted string should not be empty"
+            );
+            labels.push(formatted);
+        }
+
+        // Verify all labels are distinct
+        for i in 0..labels.len() {
+            for j in (i + 1)..labels.len() {
+                assert_ne!(labels[i], labels[j], "labels should be distinct");
+            }
+        }
     }
 }
