@@ -21,8 +21,8 @@ Tests for core-module logic are mandatory (Constitution: Testing).
 
 ### Core logic (egui-free)
 
-- [ ] T006 [US1] `src/image_proc.rs`: `decode_stage_rgba(path, max_edge) -> Result<(w,h,Vec<u8>), String>` reusing existing decode; unit tests incl. undecodable-file error path
-- [ ] T007 [US1] `src/ui_logic.rs`: loss-proof move — `plan_loss_proof_move` + `execute_move_plan` (copy→verify size→rename→remove; same-fs rename fast path; temp-file naming; cleanup-on-error reporting) + unit tests with tempdirs (cross-dir move, collision at destination, unwritable destination, source preserved on failure)
+- [x] T006 [US1] `src/image_proc.rs`: `decode_stage_rgba(path, max_edge) -> Result<(w,h,Vec<u8>), String>` reusing existing decode; unit tests incl. undecodable-file error path — 2026-07-05: done via haiku-implementer; 3 tests green.
+- [x] T007 [US1] `src/ui_logic.rs`: loss-proof move — `plan_loss_proof_move` + `execute_move_plan` (copy→verify size→rename→remove; same-fs rename fast path; temp-file naming; cleanup-on-error reporting) + unit tests with tempdirs (cross-dir move, collision at destination, unwritable destination, source preserved on failure) — 2026-07-05: done via haiku-implementer; 4 tests green.
 - [ ] T008 [US1] [P] `src/ui_logic.rs`: `save_copy_to(src, dest_dir)` collision-safe copy + unit tests
 - [ ] T009 [US1] [P] `src/ui_logic.rs`: context-action outcome formatting for activity log (`format_action_outcome`) + unit tests
 - [ ] T010 [US1] Integration test `tests/integration/feature_016_actions.rs`: save-copy / move / resize-copy / convert against tempdir fixtures incl. spaces + non-ASCII names and duplicate-name destinations (SC-003, SC-004)

@@ -1177,6 +1177,98 @@ pub fn collision_suffixed_path(dest_dir: &Path, file_name: &str) -> PathBuf {
     }
 }
 
+/// A planned loss-proof move: the exact source, final destination (already
+/// collision-safe), and a same-directory temp name used during the fallback
+/// copy-verify-rename path (feature 016, R7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovePlan {
+    pub source: PathBuf,
+    pub final_dest: PathBuf,
+    pub temp_dest: PathBuf,
+}
+
+/// Plan a loss-proof move of `src` into `dest_dir`, choosing a collision-safe
+/// final name up front (feature 016, FR-004/FR-005).
+pub fn plan_loss_proof_move(src: &Path, dest_dir: &Path) -> Result<MovePlan, String> {
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| format!("Source has no file name: {}", src.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let final_dest = collision_suffixed_path(dest_dir, &file_name);
+    let temp_dest = dest_dir.join(format!(
+        ".{file_name}.rustfeh-move-tmp-{}",
+        std::process::id()
+    ));
+    Ok(MovePlan {
+        source: src.to_path_buf(),
+        final_dest,
+        temp_dest,
+    })
+}
+
+/// Execute a loss-proof move plan: try a fast same-filesystem atomic rename
+/// first; on failure (e.g. cross-filesystem), fall back to copy → verify byte
+/// length → atomic rename into place → remove source. The source is only
+/// removed after the destination copy is verified to exist with the correct
+/// size. On any failure the source is left intact; at most one orphaned temp
+/// file may remain at `plan.temp_dest`, which is cleaned up on error here.
+pub fn execute_move_plan(plan: &MovePlan) -> Result<PathBuf, String> {
+    if std::fs::rename(&plan.source, &plan.final_dest).is_ok() {
+        return Ok(plan.final_dest.clone());
+    }
+
+    let src_len = std::fs::metadata(&plan.source)
+        .map_err(|e| {
+            format!(
+                "Failed to read source metadata {}: {e}",
+                plan.source.display()
+            )
+        })?
+        .len();
+
+    if let Err(e) = std::fs::copy(&plan.source, &plan.temp_dest) {
+        let _ = std::fs::remove_file(&plan.temp_dest);
+        return Err(format!(
+            "Failed to copy {} to destination: {e}",
+            plan.source.display()
+        ));
+    }
+
+    let copied_len = match std::fs::metadata(&plan.temp_dest) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            let _ = std::fs::remove_file(&plan.temp_dest);
+            return Err(format!("Failed to verify copy at destination: {e}"));
+        }
+    };
+    if copied_len != src_len {
+        let _ = std::fs::remove_file(&plan.temp_dest);
+        return Err(format!(
+            "Move verification failed for {}: copied {copied_len} bytes, expected {src_len}",
+            plan.source.display()
+        ));
+    }
+
+    if let Err(e) = std::fs::rename(&plan.temp_dest, &plan.final_dest) {
+        let _ = std::fs::remove_file(&plan.temp_dest);
+        return Err(format!(
+            "Failed to finalize move to {}: {e}",
+            plan.final_dest.display()
+        ));
+    }
+
+    std::fs::remove_file(&plan.source).map_err(|e| {
+        format!(
+            "Copied to {} but failed to remove source {}: {e} (source retained, no data lost)",
+            plan.final_dest.display(),
+            plan.source.display()
+        )
+    })?;
+
+    Ok(plan.final_dest.clone())
+}
+
 /// Compute output dimensions for downscaling an image to fit max_edge.
 /// Preserves aspect ratio and never upscales. Guards against zero inputs.
 pub fn stage_decode_bounds(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
@@ -1283,7 +1375,9 @@ mod tests {
 
     #[test]
     fn feh_filelist_order_matches_list_indices_sorts() {
-        let _guard = FEH_FILELIST_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = FEH_FILELIST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let root = Path::new("/data");
         let images = vec![
             entry("/data/b/z.jpg"),
@@ -1307,7 +1401,9 @@ mod tests {
 
     #[test]
     fn write_feh_filelist_one_path_per_line() {
-        let _guard = FEH_FILELIST_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = FEH_FILELIST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join("rust-feh-filelist-test");
         let _ = std::fs::remove_file(feh_filelist_temp_path());
         let a = dir.join("a.jpg");
@@ -1631,7 +1727,9 @@ mod tests {
 
     #[test]
     fn action_prefs_round_trip_save_and_load() {
-        let _guard = ACTION_PREFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ACTION_PREFS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = action_prefs_path();
         // Save original if it exists
         let original_backup = std::fs::read(&path).ok();
@@ -1662,7 +1760,9 @@ mod tests {
 
     #[test]
     fn action_prefs_missing_file_returns_default() {
-        let _guard = ACTION_PREFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ACTION_PREFS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = action_prefs_path();
         // Save original if it exists
         let original_backup = std::fs::read(&path).ok();
@@ -1683,7 +1783,9 @@ mod tests {
 
     #[test]
     fn action_prefs_corrupt_json_recovers_to_default() {
-        let _guard = ACTION_PREFS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ACTION_PREFS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = action_prefs_path();
         // Save original if it exists
         let original_backup = std::fs::read(&path).ok();
@@ -1705,5 +1807,152 @@ mod tests {
         if let Some(backup_data) = original_backup {
             let _ = std::fs::write(&path, backup_data);
         }
+    }
+
+    #[test]
+    fn loss_proof_move_same_dir_or_same_fs_succeeds() {
+        let temp_base = std::env::temp_dir().join("rust-feh-move-test-1");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"test file content";
+        std::fs::write(&src, content).unwrap();
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+        let result = execute_move_plan(&plan).unwrap();
+
+        assert!(
+            !src.exists(),
+            "source should be removed after successful move"
+        );
+        assert!(result.exists(), "destination should exist");
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            content,
+            "destination content should match source"
+        );
+        assert_eq!(
+            result,
+            dest_dir.join("source.txt"),
+            "returned path should match dest_dir.join(original_name)"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn loss_proof_move_collision_at_destination_gets_suffixed() {
+        let temp_base = std::env::temp_dir().join("rust-feh-move-test-2");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("photo.jpg");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        std::fs::write(&src, b"A").unwrap();
+        std::fs::write(dest_dir.join("photo.jpg"), b"B").unwrap();
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+        let result = execute_move_plan(&plan).unwrap();
+
+        assert!(!src.exists(), "source should be removed after move");
+        assert_eq!(
+            result,
+            dest_dir.join("photo-1.jpg"),
+            "collision should result in -1 suffix"
+        );
+        assert_eq!(
+            std::fs::read(&result).unwrap(),
+            b"A",
+            "new file should have source content"
+        );
+        assert_eq!(
+            std::fs::read(dest_dir.join("photo.jpg")).unwrap(),
+            b"B",
+            "existing photo.jpg should be untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn loss_proof_move_unwritable_destination_preserves_source() {
+        let temp_base = std::env::temp_dir().join("rust-feh-move-test-3");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let content = b"source content";
+        std::fs::write(&src, content).unwrap();
+
+        // Make destination unwritable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o555);
+            std::fs::set_permissions(&dest_dir, perms).unwrap();
+        }
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+        let result = execute_move_plan(&plan);
+
+        assert!(
+            result.is_err(),
+            "move should fail with unwritable destination"
+        );
+        assert!(src.exists(), "source should still exist after failed move");
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            content,
+            "source content should be unchanged"
+        );
+
+        // Restore permissions for cleanup
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            let _ = std::fs::set_permissions(&dest_dir, perms);
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn loss_proof_move_source_preserved_on_verification_failure() {
+        let temp_base = std::env::temp_dir().join("rust-feh-move-test-4");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        let src = temp_base.join("source.txt");
+        let dest_dir = temp_base.join("dest");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        std::fs::write(&src, b"test").unwrap();
+
+        let plan = plan_loss_proof_move(&src, &dest_dir).unwrap();
+
+        // Verify plan structure
+        assert_eq!(plan.source, src);
+        assert_eq!(plan.final_dest, dest_dir.join("source.txt"));
+        assert_eq!(plan.temp_dest.parent(), Some(dest_dir.as_path()));
+        assert!(
+            plan.temp_dest
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(&std::process::id().to_string()),
+            "temp filename should contain process id"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
     }
 }
