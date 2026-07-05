@@ -73,7 +73,7 @@ description: "Task list for Window & Viewer Stability (006)"
 
 **Independent Test**: Open a 5×5 image; feh effective visible area ≥640×480 (SC-003).
 
-- [ ] T009 [US3] Manual GUI validation of SC-003 per `quickstart.md` (BLOCKED in this env). Code policy launches feh with fixed 1280×960 geometry (`--geometry 1280x960 --scale-down --zoom max`); direct pixel/manual confirmation remains unrun because screenshot capture is unavailable.
+- [x] T009 [US3] Manual GUI validation of SC-003 per `quickstart.md` — **pass 2026-07-05** (scripted capture session, unblocked): spawned feh with the app's exact viewer args (`--geometry 1280x960 --scale-down --zoom max --filelist … --start-at <5×5 image>`, mirroring `spawn_feh_viewer` in `src/main.rs` and constants `FEH_VIEWER_GEOMETRY`/`FEH_VIEWER_ZOOM` in `src/ui_logic.rs`); `xwininfo` confirms client window exactly 1280×960 IsViewable; screenshot shows the 5×5 image upscaled to fill the stable window — no collapse to tiny dimensions (evidence: `evidence/20260705-t009-feh-1280x960-tiny-zoomed.png`). Arg-construction parity also covered by the feature-014 integration test. Bonus: SC-005 restore re-verified live ("Restored window preference: Large (1280 × 960)" from a seeded prefs file).
 
 ---
 

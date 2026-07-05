@@ -4,11 +4,19 @@
 
 **Created**: 2026-06-21
 
-**Status**: Draft
+**Status**: Closed — absorbed (maintainer confirmed 2026-07-05)
 
 **Input**: Outstanding **Bucket D** — `scanner.rs` only surfaces `PermissionDenied` walkdir errors; other failures (loops, I/O, corrupt paths) are silently skipped. Adversarial review #6.
 
+**Absorbed by**: [011-browsing-experience-round](../011-browsing-experience-round/spec.md) (2026-06-22) — scanner warnings shipped there (`format_walk_warning`/`summarize_scan_warnings`, T003–T005). This spec retained for traceability only.
+
 **Parent**: [001-persistent-ui-virtual-browsing](../001-persistent-ui-virtual-browsing/spec.md) (FR-015)
+
+## Clarifications
+
+### Session 2026-07-05
+
+- Q: Is 004 already satisfied by shipped work, obsolete, or in need of plan+tasks? → A: **Closed as absorbed by 011**, which shipped FR-001–FR-006 equivalents: scanner continues past non-fatal walkdir errors, human-readable `Scan skip:` warnings flow to the debug log, and the non-permission error path is covered by `t069_scan_skip_non_permission` (green). Decision made by the human maintainer during the 2026-07-05 backlog audit, satisfying the 007 FR-006 advisory rule. No plan/tasks will be generated for 004.
 
 ## User Scenarios & Testing *(mandatory)*
 

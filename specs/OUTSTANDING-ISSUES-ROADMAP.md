@@ -38,8 +38,8 @@ Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of 
 
 | Feature | Outstanding source | What it covers |
 |---------|-------------------|----------------|
-| [002-feh-runtime-detection](./002-feh-runtime-detection/spec.md) | A5 | Re-check feh after install without restart |
-| [003-gui-performance-validation](./003-gui-performance-validation/spec.md) | Bucket C | Automated tier **pass**; SC-004 RSS **pass** (2026-06-22); SC-002 scroll **pending** |
+| [002-feh-runtime-detection](./002-feh-runtime-detection/spec.md) | A5 | Re-check feh after install without restart — **closed, superseded by [009](./009-external-tool-runtime/spec.md)** (2026-07-05) |
+| [003-gui-performance-validation](./003-gui-performance-validation/spec.md) | Bucket C | Automated tier **pass**; SC-004 RSS **pass**; SC-002 scroll **pass** (2026-06-28) — **complete** |
 | [004-scanner-resilience](./004-scanner-resilience/spec.md) | Bucket D | **Absorbed by [011](./011-browsing-experience-round/spec.md)** (scan warnings + t069) |
 | [011-browsing-experience-round](./011-browsing-experience-round/spec.md) | Dogfood SMB | feh filelist, background scan, Activity log — **shipped** (automated pass; manual V1/V2/V4 pending) |
 | [012-ui-feedback-polish](./012-ui-feedback-polish/spec.md) | Dogfood UI screenshots | Status animation, NAS scan policy, deps collapse, bottom tips, detach log — **shipped** (automated pass; manual V1–V5 pending) |
@@ -82,11 +82,18 @@ Feature 001 convergence (T065–T069) closed **Bucket B** and automated most of 
 
 ## Recommended implement order
 
-1. **003** — SC-004 RSS **done**; finish SC-002 scroll manual session
-2. **012** — Manual SMB GUI (V1–V5 in [quickstart](./012-ui-feedback-polish/quickstart.md)); automated tier **pass**  
-3. **006** — Window/viewer stability (retroactive; not started)  
-4. ~~005, 008, 009, 011, 012~~ — **complete** (2026-06-22)  
-5. **004** — Absorbed by **011** (scanner warnings shipped)
+_Updated 2026-07-05 — records maintainer-arbitrated outcomes from the backlog audit
+(human maintainer = final arbitration per FR-006); no scope/bucket reclassification._
+
+1. ~~003~~ — **complete**: SC-004 RSS pass; SC-002 scroll pass (2026-06-28 session); stale T037 closed 2026-07-05
+2. ~~006~~ — **complete**: window presets + persistence shipped (PR #144); T009 feh-geometry validated 2026-07-05 (scripted capture)
+3. ~~005, 008, 009, 011, 012, 013, 014~~ — **complete**
+4. ~~002~~ — **closed, superseded by 009**; ~~004~~ — **closed, absorbed by 011** (Clarifications recorded 2026-07-05)
+5. **NEXT: integration workstreams** (class C, briefs in `.agents/briefs/`, maintainer runs `/speckit-specify`):
+   a. caption/TagForge external-tool integration (likely **015**)
+   b. image-tools/imtools external-tool integration (likely **016**)
+6. **Deferred by maintainer (2026-07-05)**: keyboard navigation; full config persistence — queued after the integration workstreams
+7. Residual manual clicks in 001 (V5 toggle, V6 debug-log, V3 step 4, V8 step 5) — pending maintainer choice: Xvfb session / 2-min manual run / waiver (notes in `001/tasks.md`)
 
 **Session index**: [SESSION-2026-06-22-TRACEABILITY.md](./SESSION-2026-06-22-TRACEABILITY.md) — all post-dinner topics mapped.
 

@@ -57,7 +57,7 @@
 ## Phase 6: Polish & Cross-Cutting
 
 - [x] T025 [P] Update `specs/OUTSTANDING-ISSUES-ROADMAP.md` — mark 003 automated tier pass; manual validated tier pending T017
-- [ ] T026 [P] If scroll/RSS inconclusive (VM/software GL), add Clarifications session to `specs/003-gui-performance-validation/spec.md` per 007 FR-006 advisory rule
+- [x] T026 [P] If scroll/RSS inconclusive (VM/software GL), add Clarifications session to `specs/003-gui-performance-validation/spec.md` per 007 FR-006 advisory rule — **closed 2026-07-05: condition not met** — the 2026-06-28 session was conclusive (SC-002 scroll pass, SC-004 RSS 142.8 MB pass, see `validation-results.md`); no Clarifications entry required
 - [x] T027 [P] Mention `./scripts/validate-gui-performance.sh` in `README.md` validation section (if section exists; add brief bullet if not)
 - [x] T028 Run full closure: `./scripts/validate-gui-performance.sh` && review all `[ ]` tasks above for completion
 
@@ -75,7 +75,7 @@
 - [x] T034 ~~005 gap-audit~~ — **done** (`specs/005-image-list-presentation/gap-audit.md`)
 - [x] T035 ~~006 gap-audit~~ — deferred
 - [x] T036 ~~009 implement~~ — **done** (T001–T022)
-- [ ] T037 Implement 004 FR-002–FR-006: `Scan skip:` warnings in `src/scanner.rs` — **next feature after 003 MVP**
+- [x] T037 Implement 004 FR-002–FR-006: `Scan skip:` warnings in `src/scanner.rs` — ~~next feature after 003 MVP~~ **closed 2026-07-05 as shipped via feature 011** (`format_walk_warning*` + `t069_scan_skip_non_permission` green; per NEXT-ROUND-CONSOLIDATED stale-task audit D2, maintainer confirmed)
 - [x] T038 ~~001 data-model sync~~ — partial; 005 data-model covers list entities
 - [x] T039 ~~README update~~ — done via T027
 - [x] T040 ~~ROADMAP status~~ — done via T025

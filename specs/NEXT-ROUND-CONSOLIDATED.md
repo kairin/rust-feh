@@ -135,3 +135,22 @@ Additional observations to carry into the next round:
 - **E1 — clippy gate unverifiable here**: `cargo clippy` is not installed in this environment, so clippy-completion task claims cannot be independently re-confirmed here. This is a tooling limitation, not a code gap; use `cargo check` + `cargo test` as the local gate unless clippy is installed.
 - **E2 — uneven validation artifacts**: features 005, 008, 009, 013, and 014 have no `validation-results.md`. Their task lists are fully checked and tests pass, so this is optional documentation-lifecycle parity work, not blocking implementation work.
 - **E3 — 007 is intentionally roadmap/process-only**: `007-outstanding-roadmap` lacks plan/tasks by design and should not be treated as an unimplemented feature.
+
+---
+
+## Addendum — 2026-07-05 reconciliation (lead-architect backlog audit)
+
+Status of this document's recommendations as of 2026-07-05 (main @ 3bdcdff):
+
+- **A1 (006 window-pref persistence)** — **DONE** via PR #144 (`window_prefs_path`/`save_window_prefs`/`load_window_prefs` shipped; restore re-verified live 2026-07-05: "Restored window preference: Large (1280 × 960)" from a seeded prefs file).
+- **C1 / C2 (006 plan+tasks, feature.json repoint)** — **DONE**: `specs/006-window-viewer-stability/` has plan/tasks (23 tasks, all closed as of 2026-07-05); `.specify/feature.json` → 006.
+- **D1 (001 T056)** — was already closed 2026-06-28. **D2 (003 T037)** — closed 2026-07-05 as shipped-via-011, maintainer confirmed.
+- **C3 (doc hygiene)** — done 2026-07-05: 002 marked closed/superseded-by-009 and 004 closed/absorbed-by-011 with Clarifications entries; OUTSTANDING-ISSUES-ROADMAP implement-order refreshed.
+- **B1 (003 GUI session)** — was completed 2026-06-28 (SC-002 scroll pass, RSS 142.8 MB pass); 003 board fully closed 2026-07-05.
+- **B2 (001 quickstart)** — partially closed 2026-07-05 via scripted GUI session (V1 pass, V8 pass, V3 steps 1–3 pass, evidence in `001/evidence/`); residual GUI clicks (V5, V6, V3 step 4, V8 step 5) pending maintainer choice (Xvfb / manual / waiver) — GNOME Wayland blocks synthetic input in this environment.
+- **B3/B4 (011/012 SMB manual)** — remain optional, unchanged.
+- **E1 (clippy unavailable locally)** — still true 2026-07-05 (no rustup on PATH); canonical clippy/fmt gates run in CI, which is green on main.
+- **E2 (validation-results parity for 005/008/009/013/014)** — remains optional; not scheduled (maintainer may request).
+- **Maintainer decisions recorded 2026-07-05**: keyboard navigation + full config persistence DEFERRED until after the caption (015) and image-tools (016) integration workstreams; integration briefs live in `.agents/briefs/`.
+
+Fresh verification baseline (2026-07-05, main @ 3bdcdff): `cargo test` **122 passed / 0 failed / 2 ignored** (`#[ignore = "…"]` reasons: HEIC-needs-ImageMagick in `tests/feature_005_list.rs:176`; manual venice timing in `src/scanner.rs:330`); `cargo build --release` pass. `cargo fmt`/`clippy` unavailable locally (E1) — enforced in CI.
