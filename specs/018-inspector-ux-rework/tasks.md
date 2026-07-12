@@ -91,6 +91,62 @@
 
 ---
 
+## Post-implementation adversarial-review follow-up — 2026-07-12 (opus-specialist)
+
+Consolidated output of three independent Fable-5 adversarial reviews of the full 018 diff
+(`8689292..856f592`) was handed to an opus-specialist by maintainer instruction (cited
+triggers: cross-cutting UI state machine + concurrency-adjacent async/per-frame IO). FIX-1..FIX-11
+implemented end-to-end on branch `018-inspector-ux-rework`. Gates each commit: `cargo check`
+clean, `cargo clippy -- -D warnings` clean, `cargo test` 214/0/2 (baseline 202/0/2 + 12 new
+unit tests, zero regressions).
+
+- [x] **FIX-1 [O]** (BUG, highest — FR-003 unimplemented; fold-by-default defeated): replaced the
+  per-frame level-triggered inserts in `render_inspector_panel` with an EDGE-TRIGGERED machine.
+  Decision logic extracted as a pure, unit-tested `ui_logic::AutoExpandState` (rising-edge open-once,
+  falling-edge retract-machine-owned-only, user-close suppression latch, user-open preserved,
+  drawer reference-counted via `auto_open`). Wired at scan start (`scan_directory`), scan complete
+  (`apply_scan_result`), the no-folder↔folder-loaded edge (`sync_auto_expand_folder_edge` in
+  `update`), and reused for FIX-7. Startup `initial_open_sections` semantics unchanged (machine
+  seeded from it). 8 new pure-logic tests.
+- [x] **FIX-2** (BUG — SC-005 tree-count invariant): the `ScanMsg::Converted` arm now rebuilds
+  `ScanInventory::from_entries(&self.images, …)` from the LIVE list AFTER `merge_converted_statuses`,
+  not the stale off-thread snapshot. New `inventory_rebuilt_from_live_list_after_converted_merge` test.
+- [x] **FIX-3 + FIX-4** (BUG — pinned wrong-folder no-op + per-frame blocking stat): one shared
+  in-memory membership computation (`pinned_path_in_filtered_list`) replaces the per-frame
+  `Path::exists()` stat in the detached Image-actions closure (kills the 017-class SMB stat-storm)
+  AND gates the pinned "Open in feh" action (inline hint in the detached window; pinned-specific
+  status in `open_in_feh_pinned`).
+- [x] **FIX-5** (SUSPECT — SC-006): when `PanelContext.pinned`, the detached Image-actions window
+  hides the folder-scoped Batch/Rename/Cache tabs (they act on the live filtered list) and shows a
+  one-line note; only the Single tab (acts on the pin) remains. Batch NOT re-scoped to the pin folder
+  (deliberately deferred — needs its own spec).
+- [x] **FIX-6** (SUSPECT): `pending_scroll_path` cleared in `scan_directory`'s reset and consumed
+  (cleared) in tree mode; doc rewritten. Round-trip re-arm ordering (after `navigate_to_folder`)
+  verified intact.
+- [x] **FIX-7** (SUSPECT): `mark_feh_unavailable` now surfaces Dependencies via the same edge/latch
+  machine (mid-session tool loss = rising edge); `refresh_tool_caps` symmetric-retracts BOTH tool
+  sections on an all-OK recheck (FormatDiscovery was previously never removed).
+- [x] **FIX-8** (SUSPECT): Zone C `list_height` now subtracts the group-frame vertical margin (8) +
+  trailing `item_spacing` (3), and drops the phantom flat-header subtraction in TREE mode. Pure height
+  math moved to `ui_logic::sections_drawer_body_height`/`sections_drawer_reserved_height` + 2 unit tests.
+- [x] **FIX-9** (SUSPECT): deleted the `ui.set_max_width(inspector_w)` that pushed content ~8px past
+  the panel edge (`exact_width` already fixes width).
+- [x] **FIX-10** (SUSPECT): flat-list filename column is now a fixed-width, `TextWrapMode::Truncate`
+  column with a full-path hover (new `ImageListMetrics.name_col_w`), so long names no longer clip the
+  Status column at 440px.
+- [x] **FIX-11** (docs/spec reconciliation): `merge_converted_statuses` made upgrade-only (never
+  downgrades a live `Converted` row — new test); stale "280px floor" comments → 440; PANEL_CHROME
+  scrollbar-overlay note updated to post-Batch-2 reality; `pending_flat_scroll_offset` doc rewritten;
+  two stale detach captions reworded (Browse, Image actions); STATIC_LABELS advisory concession added;
+  spec.md FR-003 recorded as edge-triggered + FIX-5 decision + dropped-persisted-prefs deviation +
+  ACCEPTED-AS-IS items; plan.md storage line corrected.
+
+**ACCEPTED AS-IS (documented, not fixed):** one-frame drawer-expand flicker (immediate-mode);
+pinned round-trip close staging the landed image (consistent 016 semantics); ~1.4px tree-row
+virtualization drift (pre-existing).
+
+---
+
 ## Checkpoint Strategy
 
 - **After Batch 0**: `cargo test` green; F1–F6 prerequisites merged

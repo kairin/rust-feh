@@ -20,6 +20,16 @@
 
 - Q: How does pinning work for detached windows? → A: **One shared Image-actions detached window, modeled as PanelPin::Image(path).** Pinning is resolved via `PanelContext` (which holds pinned vs. live state), so the detached window can keep acting on a pinned image even while the main window's selection moves. Unpinning makes it follow the live selection again.
 
+### Session 2026-07-12 (post-implementation review reconciliation — 018 FIX-1/FIX-3/FIX-5/FIX-11)
+
+- Q: FR-003 said auto-expand "MUST run per-frame," but the naive per-frame inserts left the drawer + Session status open forever after the first scan and fought a user who manually collapsed a section mid-scan (US1-AS2/AS4, SC-001 all failing). How is auto-expand actually implemented? → A: **Edge-triggered with retraction and a user-close latch (FIX-1).** The decision logic is a pure, unit-tested state machine (`ui_logic::AutoExpandState`): a rising edge (scan start, no-folder transition, tool-missing detection) opens the target section ONCE and expands the drawer; the matching falling edge (scan complete, folder loaded, tools-OK recheck) retracts only sections the machine still owns, returning the drawer to collapsed; a manual close latches suppression for the rest of that scope; a manual open makes the section user-owned so retraction leaves it. FR-003's "run per-frame" wording is superseded — the observable contract (US1-AS1..AS4, SC-001) is unchanged and now actually met.
+
+- Q: A detached Image-actions window pinned to folder A still exposed the Batch/Rename/Cache tabs after the main window navigated to folder B — those tools act on the LIVE filtered list, not the pin, so they would silently target the wrong folder (SC-006 risk). What is the minimal safe scope? → A: **Hide the folder-scoped tabs when pinned (FIX-5).** When `PanelContext.pinned`, the detached window shows only the Single tab (which acts on the pinned image itself) plus a one-line note ("Folder-scoped tools follow the main window — unpin to use here."). Re-scoping batch/rename/cache to the pin's folder is a larger change and is deliberately NOT done here; it needs its own spec.
+
+- Q: The `plan.md` "Storage" line proposed "persisted panel-toggle prefs alongside existing window-prefs." Was that delivered? → A: **No — intentional deviation.** Fold state is session-only (`App.inspector_open`), matching the maintainer clarification that sections fold by default every launch and auto-expand only on relevant events; persisting user fold choices across launches would contradict "collapsed by default across fresh launches" (SC-001). No prefs file was added for panel toggles.
+
+- Decision (documented, not fixed — ACCEPTED-AS-IS): the one-frame drawer-expand flicker on a rising edge (immediate-mode), the pinned round-trip close staging the landed image (consistent feature-016 semantics), and the ~1.4px tree-row virtualization drift (pre-existing) are accepted as-is.
+
 ## User Scenarios & Testing
 
 ### User Story 1 — Sections fold by default and auto-expand when relevant (Priority: P1)
@@ -110,7 +120,7 @@ Detaching the Image-actions section opens one shared window (not one per detache
 
 - **FR-002**: All 7 inspector sections (Browse controls, Image actions, Feh instances, Session status, Activity log, Dependencies, Format discovery) MUST default to collapsed (folded CollapsingHeaders); exactly one meta-toggle expands/collapses the drawer, bounding its height to 180–360 px when expanded, 24 px when collapsed.
 
-- **FR-003**: Auto-expand logic MUST run per-frame: no folder loaded → Browse opens; scan status changes → Session status opens; missing tool detected → Dependencies or Format discovery opens. Manual close of a section MUST prevent it from auto-opening again during that event scope (same folder, same scan attempt).
+- **FR-003** *(implemented as edge-triggered — 018 FIX-1; see 2026-07-12 reconciliation clarification)*: Auto-expand MUST surface the relevant section on the triggering EDGE and retract it when the trigger ends: no folder loaded → Browse opens (retracts when a folder loads); scan starts → Session status opens (retracts on scan complete); missing tool detected → Dependencies/Format discovery opens (retracts when a recheck finds all tools OK). Manual close of a section MUST prevent it from auto-opening again during that event scope (same folder, same scan attempt); manual open MUST survive the retraction. The drawer expands with the first auto-open and re-collapses when the machine no longer keeps any section open and the user has not taken the drawer over. *(The original "MUST run per-frame" phrasing is superseded; per-frame level-triggering defeated the fold-by-default contract and FR-003's own latch clause.)*
 
 - **FR-004**: Central panel MUST display ONLY the staged image (full fit-to-pane scaling), with zero menu controls, list overlay, subfolder breadcrumb, or inventory text; the image selection is always driven from the inspector's file list.
 
@@ -164,6 +174,6 @@ Detaching the Image-actions section opens one shared window (not one per detache
 
 - The pinning model (`PanelPin` + `PanelContext`) ensures a detached window can act on a pinned image without holding a live reference; all image-action code will be threaded with `&PanelContext` before any `&mut self`.
 
-- Auto-expand logic uses the same per-frame event queue that drives Session status and tool-detection alerts; Batch 3+ integrates with that queue.
+- Auto-expand logic is edge-triggered at the scan/no-folder/tool-detection event sites (018 FIX-1), driven by the pure `ui_logic::AutoExpandState` machine rather than a per-frame re-assert.
 
 - Central panel image display (the "staged image" from feature 016) continues unchanged; this feature only removes the list and subfolder controls from the central space.

@@ -25,7 +25,7 @@ Note: the outer infinite `ScrollArea` wrapping the whole inspector today is REMO
 
 **Primary Dependencies**: existing only — egui/eframe 0.30 (glow), same stack. **No new dependencies** (FR-012).
 
-**Storage**: panel open/closed state lives in `App.inspector_open: HashSet<InspectorSection>`; detached-window metadata in `App.detached: HashMap<InspectorSection, DetachedWindow>`; persisted panel-toggle prefs alongside existing window-prefs (`~/.config/rust-feh/prefs.json`).
+**Storage**: panel open/closed state lives in `App.inspector_open: HashSet<InspectorSection>`; edge-trigger tracking in `App.auto_expand: AutoExpandState` (018 FIX-1); detached-window metadata in `App.detached: HashMap<InspectorSection, DetachedWindow>`. ~~persisted panel-toggle prefs alongside existing window-prefs~~ — **DROPPED (intentional deviation, 018 FIX-11 reconciliation):** fold state is session-only. Persisting user fold choices across launches would contradict the "collapsed by default across fresh launches" contract (SC-001); no panel-toggle prefs file was added.
 
 **Testing**: `cargo test` — unit tests in `ui_logic.rs`/`types.rs` for new pure logic (`InspectorSection` enum + `ALL`, `PanelPin`, `DetachedWindow`, `PanelContext` state resolution); integration tests for drawer-height math and list-virtualization stability; GUI validation per quickstart.md.
 
