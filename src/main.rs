@@ -19,19 +19,16 @@ use rust_feh::ui_logic::{
     entry_is_launchable, execute_move_plan, expand_rename_pattern, feh_entry_filelist_path,
     feh_filelist_temp_path, feh_missing_status, feh_not_installed_launch_status, file_name_display,
     file_status_decodable, file_status_label, finalize_scan_entries_fast, folder_line_suffix,
-    folder_tree_display_name,
-    format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
-    initial_open_sections, inventory_magick_hint, is_network_mount_path, join_activity_log,
-    list_indices,
-    list_subfolders, list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
-    merge_converted_statuses, plan_loss_proof_move, post_scan_status, prepare_fast_work_dir,
-    relative_folder, save_action_prefs, save_copy_to, save_launch_list, save_window_prefs,
-    scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
-    tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
-    window_preset_dimensions, window_preset_label, write_feh_filelist, write_feh_filelist_to,
-    DetachedWindow, EntryLaunchState, InspectorSection, JobMsg, TreeRow, TreeRowKind,
-    FEH_VIEWER_GEOMETRY,
-    FEH_VIEWER_ZOOM,
+    folder_tree_display_name, format_action_outcome, format_image_tools_log, format_inventory_bar,
+    handoff_path, initial_open_sections, inventory_magick_hint, is_network_mount_path,
+    join_activity_log, list_indices, list_subfolders, list_view_mode_label, load_action_prefs,
+    load_launch_list, load_window_prefs, merge_converted_statuses, plan_loss_proof_move,
+    post_scan_status, prepare_fast_work_dir, relative_folder, save_action_prefs, save_copy_to,
+    save_launch_list, save_window_prefs, scan_magick_enabled, showing_count_label, sort_mode_label,
+    spawn_job, tree_file_glyph, tree_visible_rows, validate_handoff, viewer_profile_dir,
+    viewer_spawn_command, window_preset_dimensions, window_preset_label, write_feh_filelist,
+    write_feh_filelist_to, DetachedWindow, EntryLaunchState, InspectorSection, JobMsg,
+    PanelContext, PanelPin, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM,
     WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
 };
 use std::collections::{HashMap, HashSet};
@@ -294,7 +291,13 @@ fn detect_app_state() -> (String, bool, ToolCapabilities, bool, bool) {
     } else {
         "feh not found — install with `sudo apt install feh`".to_string()
     };
-    (status, feh_available, tool_caps, deps_section_open, tools_panel_ok)
+    (
+        status,
+        feh_available,
+        tool_caps,
+        deps_section_open,
+        tools_panel_ok,
+    )
 }
 
 fn build_native_options(w: f32, h: f32, min_w: f32, min_h: f32) -> eframe::NativeOptions {
@@ -322,7 +325,9 @@ fn handle_gui_failure(
     if on_wayland {
         eprintln!("[rust-feh] Wayland environment detected (WAYLAND_DISPLAY set).");
         eprintln!("[rust-feh] Native Wayland backend failed to connect (this happens when no compositor is available,");
-        eprintln!("[rust-feh] e.g. some SSH sessions, broken sockets, or misconfigured Wayland setups).");
+        eprintln!(
+            "[rust-feh] e.g. some SSH sessions, broken sockets, or misconfigured Wayland setups)."
+        );
         eprintln!("[rust-feh] Most real Wayland desktops (GNOME, KDE Plasma, Sway, Hyprland, etc.) work great with");
         eprintln!("[rust-feh] native Wayland when a compositor is running.");
         eprintln!("[rust-feh] Retrying with X11 backend (XWayland) as fallback...");
@@ -649,7 +654,12 @@ impl RustFehApp {
         self.navigate_to_folder(&path);
     }
 
-    fn feh_button(ui: &mut egui::Ui, label: &str, available: bool, enabled: bool) -> egui::Response {
+    fn feh_button(
+        ui: &mut egui::Ui,
+        label: &str,
+        available: bool,
+        enabled: bool,
+    ) -> egui::Response {
         if available && enabled {
             ui.add(egui::Button::new(label))
         } else {
@@ -724,6 +734,10 @@ impl RustFehApp {
         self.open_in_feh(&path);
     }
 
+    fn panel_context(&self, pin: Option<&PanelPin>) -> PanelContext {
+        PanelContext::resolve(pin, self.selected.as_deref(), self.current_dir.as_deref())
+    }
+
     fn clamp_viewport_size(&self, size: egui::Vec2) -> egui::Vec2 {
         let (w, h) = clamp_window_size(size.x, size.y);
         egui::vec2(w, h)
@@ -747,7 +761,9 @@ impl RustFehApp {
         let lock_size = self.clamp_viewport_size(lock_size);
         ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(self.window_resizable));
         let (min_w, min_h) = WINDOW_MIN_RESIZABLE;
-        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(min_w, min_h)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+            min_w, min_h,
+        )));
         if self.window_resizable {
             let (max_w, max_h) = WINDOW_MAX_RESIZABLE;
             ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(egui::vec2(
@@ -792,7 +808,8 @@ impl RustFehApp {
         self.feh_available = self.tool_caps.feh_available;
         if self.tool_caps.has_missing_required() {
             self.inspector_open.insert(InspectorSection::Dependencies);
-            self.inspector_open.insert(InspectorSection::FormatDiscovery);
+            self.inspector_open
+                .insert(InspectorSection::FormatDiscovery);
         } else {
             self.inspector_open.remove(&InspectorSection::Dependencies);
         }
@@ -990,7 +1007,9 @@ impl RustFehApp {
     }
 
     fn render_detached_placeholder(ui: &mut egui::Ui, segment: &str) {
-        ui.small(format!("{segment} is in a separate window. Close it with X to return here."));
+        ui.small(format!(
+            "{segment} is in a separate window. Close it with X to return here."
+        ));
     }
 
     fn activity_log_header_label(&self) -> String {
@@ -1002,7 +1021,10 @@ impl RustFehApp {
                 format!("Activity log — {n} events")
             }
         };
-        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::ActivityLog))
+        Self::header_with_detach_suffix(
+            base,
+            self.detached.contains_key(&InspectorSection::ActivityLog),
+        )
     }
 
     fn deps_header_label(&self) -> String {
@@ -1011,13 +1033,20 @@ impl RustFehApp {
         } else {
             "⚠ Dependencies — action needed".to_string()
         };
-        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::Dependencies))
+        Self::header_with_detach_suffix(
+            base,
+            self.detached.contains_key(&InspectorSection::Dependencies),
+        )
     }
 
     fn format_discovery_header_label(&self) -> String {
         let routes = self.tool_caps.format_routes();
         let base = format!("Format discovery — {} groups", routes.len());
-        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::FormatDiscovery))
+        Self::header_with_detach_suffix(
+            base,
+            self.detached
+                .contains_key(&InspectorSection::FormatDiscovery),
+        )
     }
 
     fn render_inspector_activity_log(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1031,7 +1060,8 @@ impl RustFehApp {
             "Scan events, feh commands, warnings",
             "Detach window",
         ) {
-            self.detached.insert(InspectorSection::ActivityLog, DetachedWindow::default());
+            self.detached
+                .insert(InspectorSection::ActivityLog, DetachedWindow::default());
         }
         self.render_activity_log_body(ui, ctx);
     }
@@ -1058,15 +1088,14 @@ impl RustFehApp {
             "feh, ImageMagick, and other PATH tools",
             "Detach window",
         ) {
-            self.detached.insert(InspectorSection::Dependencies, DetachedWindow::default());
+            self.detached
+                .insert(InspectorSection::Dependencies, DetachedWindow::default());
         }
         self.render_deps_section_body(ui, ctx);
     }
 
     fn render_format_discovery_body(&mut self, ui: &mut egui::Ui) {
-        ui.small(
-            "Scan = native listed or magick-detected; View = feh.",
-        );
+        ui.small("Scan = native listed or magick-detected; View = feh.");
         let routes = self.tool_caps.format_routes();
         for route in &routes {
             let route_id = route.extensions.to_string();
@@ -1084,7 +1113,10 @@ impl RustFehApp {
     }
 
     fn render_inspector_format_discovery(&mut self, ui: &mut egui::Ui) {
-        if self.detached.contains_key(&InspectorSection::FormatDiscovery) {
+        if self
+            .detached
+            .contains_key(&InspectorSection::FormatDiscovery)
+        {
             Self::render_detached_placeholder(ui, "Format discovery");
             return;
         }
@@ -1094,7 +1126,8 @@ impl RustFehApp {
             "Per-format scan, view, and resize routing",
             "Detach window",
         ) {
-            self.detached.insert(InspectorSection::FormatDiscovery, DetachedWindow::default());
+            self.detached
+                .insert(InspectorSection::FormatDiscovery, DetachedWindow::default());
         }
         self.render_format_discovery_body(ui);
     }
@@ -1128,7 +1161,8 @@ impl RustFehApp {
             "Folder, filter, sort, and list view mode",
             "Detach window",
         ) {
-            self.detached.insert(InspectorSection::Browse, DetachedWindow::default());
+            self.detached
+                .insert(InspectorSection::Browse, DetachedWindow::default());
         }
         self.render_browse_controls_body(ui);
     }
@@ -1143,16 +1177,65 @@ impl RustFehApp {
                     .unwrap_or_else(|| path.display().to_string())
             ),
         };
-        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::ImageActions))
+        Self::header_with_detach_suffix(
+            base,
+            self.detached.contains_key(&InspectorSection::ImageActions),
+        )
     }
 
-    fn render_image_actions_body(&mut self, ui: &mut egui::Ui) {
+    fn render_image_actions_body(&mut self, ui: &mut egui::Ui, pctx: &PanelContext) {
+        if pctx.pinned {
+            let enabled = self.feh_available && pctx.image.is_some();
+            if Self::feh_button(ui, "Open in feh", self.feh_available, enabled).clicked() {
+                self.log("User clicked 'Open in feh' (pinned)");
+                if let Some(p) = pctx.image.as_deref() {
+                    self.open_in_feh_pinned(p);
+                }
+            }
+            return;
+        }
         let feh_ready = self.feh_open_ready();
-
         if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
             self.log("User clicked 'Open in feh' (inspector)");
             self.try_open_in_feh();
         }
+    }
+
+    /// Pin-to-current-image / Unpin toggle for the detached Image-actions
+    /// window (018 Batch 5, decision 4): pinning captures `self.selected` at
+    /// the moment of the click, so the window keeps acting on that file even
+    /// as the live selection moves elsewhere. `advance_stage_after_move` only
+    /// fixes up the central stage's path on a move — it does NOT follow or
+    /// clear pins, so a pinned file that gets moved/deleted goes stale until
+    /// the user unpins (handled by the stale-pin hint in the caller).
+    fn render_image_actions_pin_toggle(&mut self, ui: &mut egui::Ui) {
+        let pinned = self
+            .detached
+            .get(&InspectorSection::ImageActions)
+            .and_then(|w| w.pin.as_ref())
+            .is_some();
+        ui.horizontal(|ui| {
+            if pinned {
+                if ui.small_button("Unpin (follow selection)").clicked() {
+                    if let Some(w) = self.detached.get_mut(&InspectorSection::ImageActions) {
+                        w.pin = None;
+                    }
+                }
+            } else {
+                let can_pin = self.selected.is_some();
+                if ui
+                    .add_enabled(can_pin, egui::Button::new("Pin to current image").small())
+                    .clicked()
+                {
+                    if let Some(sel) = self.selected.clone() {
+                        if let Some(w) = self.detached.get_mut(&InspectorSection::ImageActions) {
+                            w.pin = Some(PanelPin::Image(sel));
+                        }
+                    }
+                }
+            }
+        });
+        ui.separator();
     }
 
     /// Image-actions body + Image Tools, as a single unit (018 Batch 4 parity
@@ -1160,10 +1243,15 @@ impl RustFehApp {
     /// body (missing Image Tools) while the docked inspector showed both.
     /// Both call sites now go through this one function so they can't drift
     /// apart again.
-    fn render_image_actions_full(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.render_image_actions_body(ui);
+    fn render_image_actions_full(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        pctx: &PanelContext,
+    ) {
+        self.render_image_actions_body(ui, pctx);
         ui.separator();
-        self.render_inspector_image_tools(ui, ctx);
+        self.render_inspector_image_tools(ui, ctx, pctx);
     }
 
     fn render_inspector_image_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1172,14 +1260,12 @@ impl RustFehApp {
             return;
         }
 
-        if Self::render_segment_detach_toolbar(
-            ui,
-            "Open selected image in feh",
-            "Detach window",
-        ) {
-            self.detached.insert(InspectorSection::ImageActions, DetachedWindow::default());
+        if Self::render_segment_detach_toolbar(ui, "Open selected image in feh", "Detach window") {
+            self.detached
+                .insert(InspectorSection::ImageActions, DetachedWindow::default());
         }
-        self.render_image_actions_full(ui, ctx);
+        let pctx = self.panel_context(None);
+        self.render_image_actions_full(ui, ctx, &pctx);
     }
 
     /// FR-002 default folder resolution for a new launch entry.
@@ -1229,7 +1315,10 @@ impl RustFehApp {
         } else {
             format!("Feh instances — {n}")
         };
-        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::FehInstances))
+        Self::header_with_detach_suffix(
+            base,
+            self.detached.contains_key(&InspectorSection::FehInstances),
+        )
     }
 
     fn persist_launch_entries(&mut self) {
@@ -1257,10 +1346,7 @@ impl RustFehApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let id = format!(
-            "{created_at:x}-{}",
-            self.launch_entries.entries.len()
-        );
+        let id = format!("{created_at:x}-{}", self.launch_entries.entries.len());
         if self.launch_entries.version == 0 {
             self.launch_entries.version = 1;
         }
@@ -1385,10 +1471,7 @@ impl RustFehApp {
         self.spawn_feh_viewer(
             &list_path,
             &start,
-            format!(
-                "Spawning feh for entry {} ({count} images)",
-                entry.id
-            ),
+            format!("Spawning feh for entry {} ({count} images)", entry.id),
             format!("Launched feh ({count} images)"),
         );
     }
@@ -1604,7 +1687,8 @@ impl RustFehApp {
             "Manage multiple feh launch configurations",
             "Detach window",
         ) {
-            self.detached.insert(InspectorSection::FehInstances, DetachedWindow::default());
+            self.detached
+                .insert(InspectorSection::FehInstances, DetachedWindow::default());
         }
         self.render_feh_instances_body(ui);
     }
@@ -1871,7 +1955,10 @@ impl RustFehApp {
             prepare_paths: vec![],
             prepare_temp: temp,
         });
-        self.log(format!("Prepare Fast job started for {} images", paths.len()));
+        self.log(format!(
+            "Prepare Fast job started for {} images",
+            paths.len()
+        ));
     }
 
     fn tools_finish_prepare_fast(&mut self, paths: Vec<PathBuf>, temp: PathBuf) {
@@ -1926,12 +2013,7 @@ impl RustFehApp {
                     if p.message.starts_with("skip:") {
                         job.batch_fail += 1;
                     }
-                    self.status = format!(
-                        "Batch {}/{}: {}",
-                        p.current + 1,
-                        p.total,
-                        p.message
-                    );
+                    self.status = format!("Batch {}/{}: {}", p.current + 1, p.total, p.message);
                 }
                 JobMsg::Item(res) => {
                     job.batch_ok += 1;
@@ -1968,12 +2050,7 @@ impl RustFehApp {
                     job.current = p.current;
                     job.total = p.total;
                     job.message = p.message.clone();
-                    self.status = format!(
-                        "Pre-cache {}/{}: {}",
-                        p.current + 1,
-                        p.total,
-                        p.message
-                    );
+                    self.status = format!("Pre-cache {}/{}: {}", p.current + 1, p.total, p.message);
                 }
                 JobMsg::Item(true) => job.precache_ok += 1,
                 JobMsg::Item(false) => {}
@@ -1986,10 +2063,8 @@ impl RustFehApp {
                         "Pre-cache put attempted for {}/{} images",
                         job.precache_ok, job.total
                     ));
-                    self.status = format!(
-                        "Pre-cache done: {}/{} cached",
-                        job.precache_ok, job.total
-                    );
+                    self.status =
+                        format!("Pre-cache done: {}/{} cached", job.precache_ok, job.total);
                     done = true;
                 }
             }
@@ -2010,12 +2085,8 @@ impl RustFehApp {
                     job.current = p.current;
                     job.total = p.total;
                     job.message = p.message.clone();
-                    self.status = format!(
-                        "Prepare Fast {}/{}: {}",
-                        p.current + 1,
-                        p.total,
-                        p.message
-                    );
+                    self.status =
+                        format!("Prepare Fast {}/{}: {}", p.current + 1, p.total, p.message);
                 }
                 JobMsg::Item(path) => job.prepare_paths.push(path),
                 JobMsg::Cancelled => {
@@ -2130,7 +2201,11 @@ impl RustFehApp {
         if let Some(e) = &outcome.error {
             self.log(format!(
                 "Rename failed: {e}{}",
-                if outcome.rolled_back { " (rolled back)" } else { "" }
+                if outcome.rolled_back {
+                    " (rolled back)"
+                } else {
+                    ""
+                }
             ));
             self.status = format!("Rename failed: {e}");
         } else {
@@ -2181,7 +2256,12 @@ impl RustFehApp {
             });
     }
 
-    fn render_tools_crop_preview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_tools_crop_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        pctx: &PanelContext,
+    ) {
         ui.label("Geometry WxH+X+Y:");
         if ui
             .text_edit_singleline(&mut self.tools_panel.crop_geometry)
@@ -2189,7 +2269,7 @@ impl RustFehApp {
         {
             self.tools_panel.last_crop_key.clear();
         }
-        let Some(sel) = &self.selected else {
+        let Some(sel) = pctx.image.as_deref() else {
             return;
         };
         let key = format!("{}:{}", sel.display(), self.tools_panel.crop_geometry);
@@ -2199,11 +2279,8 @@ impl RustFehApp {
                     [px.width as usize, px.height as usize],
                     &px.rgba,
                 );
-                self.tools_panel.crop_texture = Some(ctx.load_texture(
-                    "crop_preview",
-                    img,
-                    egui::TextureOptions::LINEAR,
-                ));
+                self.tools_panel.crop_texture =
+                    Some(ctx.load_texture("crop_preview", img, egui::TextureOptions::LINEAR));
                 self.tools_panel.last_crop_key = key;
             }
         }
@@ -2242,7 +2319,12 @@ impl RustFehApp {
         }
     }
 
-    fn render_tools_single_batch_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_tools_single_batch_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        pctx: &PanelContext,
+    ) {
         ui.horizontal(|ui| {
             ui.selectable_value(
                 &mut self.tools_panel.single_op,
@@ -2258,7 +2340,7 @@ impl RustFehApp {
         });
         match self.tools_panel.single_op {
             ToolsSingleOp::Resize => self.render_tools_resize_controls(ui),
-            ToolsSingleOp::Crop => self.render_tools_crop_preview(ui, ctx),
+            ToolsSingleOp::Crop => self.render_tools_crop_preview(ui, ctx, pctx),
             ToolsSingleOp::Convert => {
                 ui.text_edit_singleline(&mut self.tools_panel.convert_format);
             }
@@ -2349,13 +2431,19 @@ impl RustFehApp {
         let paths = self.tools_batch_paths();
         let job_busy = self.tools_job_active();
         if ui
-            .add_enabled(!paths.is_empty() && !job_busy, egui::Button::new("Pre-cache folder"))
+            .add_enabled(
+                !paths.is_empty() && !job_busy,
+                egui::Button::new("Pre-cache folder"),
+            )
             .clicked()
         {
             self.tools_start_precache_job();
         }
         if ui
-            .add_enabled(!paths.is_empty() && !job_busy, egui::Button::new("Prepare Fast feh"))
+            .add_enabled(
+                !paths.is_empty() && !job_busy,
+                egui::Button::new("Prepare Fast feh"),
+            )
             .clicked()
         {
             self.tools_start_prepare_fast_job();
@@ -2366,7 +2454,10 @@ impl RustFehApp {
                 set.materialized_paths.len()
             ));
             if ui
-                .add_enabled(self.feh_available, egui::Button::new("Launch feh on optimized"))
+                .add_enabled(
+                    self.feh_available,
+                    egui::Button::new("Launch feh on optimized"),
+                )
                 .clicked()
             {
                 self.open_feh_on_prepared_fast();
@@ -2431,9 +2522,12 @@ impl RustFehApp {
         if ui.button("Refresh preview").clicked() {
             self.tools_refresh_rename_preview();
         }
-        let ok = self.tools_panel.rename_error.is_none()
-            && !self.tools_panel.rename_preview.is_empty();
-        if ui.add_enabled(ok, egui::Button::new("Apply rename…")).clicked() {
+        let ok =
+            self.tools_panel.rename_error.is_none() && !self.tools_panel.rename_preview.is_empty();
+        if ui
+            .add_enabled(ok, egui::Button::new("Apply rename…"))
+            .clicked()
+        {
             self.tools_panel.rename_confirm_open = true;
         }
         if self.tools_panel.rename_confirm_open && ok && ui.button("Confirm rename").clicked() {
@@ -2441,16 +2535,16 @@ impl RustFehApp {
         }
     }
 
-    fn render_tools_action_buttons(&mut self, ui: &mut egui::Ui) {
+    fn render_tools_action_buttons(&mut self, ui: &mut egui::Ui, pctx: &PanelContext) {
         ui.separator();
         match self.tools_panel.section {
             ToolsSection::Single => {
                 if ui
-                    .add_enabled(self.selected.is_some(), egui::Button::new("Apply"))
+                    .add_enabled(pctx.image.is_some(), egui::Button::new("Apply"))
                     .clicked()
                 {
-                    if let Some(sel) = self.selected.clone() {
-                        self.tools_apply_single(&sel);
+                    if let Some(sel) = pctx.image.as_deref() {
+                        self.tools_apply_single(sel);
                     }
                 }
             }
@@ -2460,25 +2554,38 @@ impl RustFehApp {
         }
     }
 
-    fn render_inspector_image_tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_inspector_image_tools(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        pctx: &PanelContext,
+    ) {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new("Image Tools").strong());
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Single, "Single");
+                ui.selectable_value(
+                    &mut self.tools_panel.section,
+                    ToolsSection::Single,
+                    "Single",
+                );
                 ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Batch, "Batch");
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Rename, "Rename");
+                ui.selectable_value(
+                    &mut self.tools_panel.section,
+                    ToolsSection::Rename,
+                    "Rename",
+                );
                 ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Cache, "Cache");
             });
             ui.separator();
             match self.tools_panel.section {
                 ToolsSection::Single | ToolsSection::Batch => {
-                    self.render_tools_single_batch_section(ui, ctx);
+                    self.render_tools_single_batch_section(ui, ctx, pctx);
                 }
                 ToolsSection::Rename => self.render_tools_rename_section(ui),
                 ToolsSection::Cache => self.render_tools_cache_section(ui),
             }
             self.render_tools_job_status(ui);
-            self.render_tools_action_buttons(ui);
+            self.render_tools_action_buttons(ui, pctx);
         });
     }
 
@@ -2608,8 +2715,7 @@ impl RustFehApp {
             }
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new("Browse · actions · session · log · deps · formats")
-                        .weak(),
+                    egui::RichText::new("Browse · actions · session · log · deps · formats").weak(),
                 )
                 .wrap_mode(egui::TextWrapMode::Truncate),
             );
@@ -2641,7 +2747,9 @@ impl RustFehApp {
         let browse_header = self.browse_header_label();
         let browse_response = egui::CollapsingHeader::new(browse_header)
             .id_salt("inspector_browse")
-            .open(Some(self.inspector_open.contains(&InspectorSection::Browse)))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::Browse),
+            ))
             .show(ui, |ui| {
                 self.render_inspector_browse(ui);
             });
@@ -2653,7 +2761,8 @@ impl RustFehApp {
         let actions_response = egui::CollapsingHeader::new(actions_header)
             .id_salt("inspector_image_actions")
             .open(Some(
-                self.inspector_open.contains(&InspectorSection::ImageActions),
+                self.inspector_open
+                    .contains(&InspectorSection::ImageActions),
             ))
             .show(ui, |ui| {
                 self.render_inspector_image_actions(ui, ctx);
@@ -2666,7 +2775,8 @@ impl RustFehApp {
         let feh_instances_response = egui::CollapsingHeader::new(feh_instances_header)
             .id_salt("inspector_feh_instances")
             .open(Some(
-                self.inspector_open.contains(&InspectorSection::FehInstances),
+                self.inspector_open
+                    .contains(&InspectorSection::FehInstances),
             ))
             .show(ui, |ui| {
                 self.render_inspector_feh_instances(ui);
@@ -2697,7 +2807,8 @@ impl RustFehApp {
         let status_response = egui::CollapsingHeader::new(status_header)
             .id_salt("inspector_session_status")
             .open(Some(
-                self.inspector_open.contains(&InspectorSection::SessionStatus),
+                self.inspector_open
+                    .contains(&InspectorSection::SessionStatus),
             ))
             .show(ui, |ui| {
                 if self.scanning && !self.detached.contains_key(&InspectorSection::SessionStatus) {
@@ -2733,7 +2844,8 @@ impl RustFehApp {
         let deps_response = egui::CollapsingHeader::new(deps_header)
             .id_salt("tool_deps")
             .open(Some(
-                self.inspector_open.contains(&InspectorSection::Dependencies),
+                self.inspector_open
+                    .contains(&InspectorSection::Dependencies),
             ))
             .show(ui, |ui| {
                 self.render_inspector_dependencies(ui, ctx);
@@ -2746,7 +2858,8 @@ impl RustFehApp {
         let fd_response = egui::CollapsingHeader::new(fd_header)
             .id_salt("tool_format_discovery")
             .open(Some(
-                self.inspector_open.contains(&InspectorSection::FormatDiscovery),
+                self.inspector_open
+                    .contains(&InspectorSection::FormatDiscovery),
             ))
             .show(ui, |ui| {
                 self.render_inspector_format_discovery(ui);
@@ -2807,12 +2920,7 @@ impl RustFehApp {
     }
 
     fn inspector_max_width(ctx: &egui::Context) -> f32 {
-        let viewport_w = ctx.input(|i| {
-            i.viewport()
-                .inner_rect
-                .map(|r| r.width())
-                .unwrap_or(720.0)
-        });
+        let viewport_w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width()).unwrap_or(720.0));
         // Inspector must not exceed the central image-list panel (each gets at least half).
         (viewport_w * 0.5).max(260.0)
     }
@@ -2984,7 +3092,8 @@ impl RustFehApp {
             "Image count, current status, operation speed tips",
             "Detach window",
         ) {
-            self.detached.insert(InspectorSection::SessionStatus, DetachedWindow::default());
+            self.detached
+                .insert(InspectorSection::SessionStatus, DetachedWindow::default());
         }
         self.render_session_status_body(ui, ctx, shown, total, time);
     }
@@ -3023,16 +3132,44 @@ impl RustFehApp {
             if !self.detached.contains_key(&section) {
                 continue;
             }
-            let (title, default_width) = Self::detached_window_chrome(section);
+            let (chrome_title, default_width) = Self::detached_window_chrome(section);
+            let title: String = if section == InspectorSection::ImageActions {
+                match self.detached.get(&section).and_then(|w| w.pin.as_ref()) {
+                    Some(PanelPin::Image(path)) => {
+                        format!("{chrome_title} — 📌 {}", file_name_display(path))
+                    }
+                    None => chrome_title.to_string(),
+                }
+            } else {
+                chrome_title.to_string()
+            };
             let mut open = true;
             egui::Window::new(title)
+                .id(egui::Id::new("detached_window").with(section))
                 .open(&mut open)
                 .collapsible(true)
                 .resizable(true)
                 .default_width(default_width)
                 .show(ctx, |ui| match section {
                     InspectorSection::Browse => self.render_browse_controls_body(ui),
-                    InspectorSection::ImageActions => self.render_image_actions_full(ui, ctx),
+                    InspectorSection::ImageActions => {
+                        self.render_image_actions_pin_toggle(ui);
+                        let pin = self.detached.get(&section).and_then(|w| w.pin.as_ref());
+                        let pctx = self.panel_context(pin);
+                        let stale_pin = pctx.pinned
+                            && pctx.image.as_deref().map(|p| !p.exists()).unwrap_or(false);
+                        if stale_pin {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                format!(
+                                    "Pinned image no longer exists: {}. Unpin or pin a different image.",
+                                    pctx.image.as_deref().map(file_name_display).unwrap_or_default()
+                                ),
+                            );
+                        } else {
+                            self.render_image_actions_full(ui, ctx, &pctx);
+                        }
+                    }
                     InspectorSection::FehInstances => self.render_feh_instances_body(ui),
                     InspectorSection::SessionStatus => {
                         let pulse_fill = if self.scanning {
@@ -3113,11 +3250,7 @@ impl RustFehApp {
                 WindowSizePreset::Large,
             ] {
                 if ui
-                    .selectable_value(
-                        &mut self.window_size,
-                        preset,
-                        window_preset_label(preset),
-                    )
+                    .selectable_value(&mut self.window_size, preset, window_preset_label(preset))
                     .clicked()
                 {
                     ui.close_menu();
@@ -3162,7 +3295,10 @@ impl RustFehApp {
     fn render_inspector_nav_strip(&mut self, ui: &mut egui::Ui) {
         let cur = self.current_dir.clone();
         let has_folder = cur.is_some();
-        let up_target = cur.as_ref().and_then(|c| c.parent()).map(|p| p.to_path_buf());
+        let up_target = cur
+            .as_ref()
+            .and_then(|c| c.parent())
+            .map(|p| p.to_path_buf());
         let mut target: Option<PathBuf> = None;
         ui.horizontal(|ui| {
             if ui
@@ -3397,7 +3533,9 @@ impl RustFehApp {
         metrics: ImageListMetrics,
     ) -> Option<f32> {
         let target = self.pending_scroll_path.clone()?;
-        let row = filtered.iter().position(|&i| self.images[i].path == target)?;
+        let row = filtered
+            .iter()
+            .position(|&i| self.images[i].path == target)?;
         self.pending_scroll_path = None;
         Some((row as f32 * metrics.row_h - metrics.list_height / 2.0).max(0.0))
     }
@@ -3433,12 +3571,7 @@ impl RustFehApp {
         }
     }
 
-    fn render_tree_file_row(
-        &mut self,
-        ui: &mut egui::Ui,
-        tree_row: &TreeRow,
-        indent: f32,
-    ) {
+    fn render_tree_file_row(&mut self, ui: &mut egui::Ui, tree_row: &TreeRow, indent: f32) {
         let Some(idx) = tree_row.entry_index else {
             return;
         };
@@ -3611,8 +3744,10 @@ impl RustFehApp {
                 height,
                 rgba,
             } if generation == self.stage_generation => {
-                let color_image =
-                    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [width as usize, height as usize],
+                    &rgba,
+                );
                 let texture = ctx.load_texture(
                     format!("stage-{generation}"),
                     color_image,
@@ -3621,7 +3756,9 @@ impl RustFehApp {
                 self.stage_texture = Some(texture);
                 self.stage_state = StageState::Ready { width, height };
             }
-            StageDecodeMsg::Failed { generation, reason } if generation == self.stage_generation => {
+            StageDecodeMsg::Failed { generation, reason }
+                if generation == self.stage_generation =>
+            {
                 self.stage_texture = None;
                 self.stage_state = StageState::Failed { reason };
             }
@@ -3757,9 +3894,12 @@ impl RustFehApp {
                 Some(dest_dir),
                 Ok(Some(produced)),
             ),
-            Err(reason) => {
-                self.record_action_outcome(ContextAction::SaveCopyTo, path, Some(dest_dir), Err(reason))
-            }
+            Err(reason) => self.record_action_outcome(
+                ContextAction::SaveCopyTo,
+                path,
+                Some(dest_dir),
+                Err(reason),
+            ),
         }
     }
 
@@ -3770,7 +3910,12 @@ impl RustFehApp {
         let plan = match plan_loss_proof_move(path, &dest_dir) {
             Ok(p) => p,
             Err(reason) => {
-                self.record_action_outcome(ContextAction::MoveTo, path, Some(dest_dir), Err(reason));
+                self.record_action_outcome(
+                    ContextAction::MoveTo,
+                    path,
+                    Some(dest_dir),
+                    Err(reason),
+                );
                 return;
             }
         };
@@ -3850,7 +3995,11 @@ impl RustFehApp {
     /// Collision-safe destination for a derived (resize/convert) output,
     /// reusing the existing Image Tools "processed" subfolder convention
     /// (FR-006) plus `collision_suffixed_path` (FR-004).
-    fn derived_action_output_path(source: &Path, stem_suffix: &str, ext: &str) -> Result<PathBuf, String> {
+    fn derived_action_output_path(
+        source: &Path,
+        stem_suffix: &str,
+        ext: &str,
+    ) -> Result<PathBuf, String> {
         let policy = OutputPolicy::NewSubfolder {
             name: "processed".into(),
         };
@@ -3882,8 +4031,12 @@ impl RustFehApp {
 
     fn action_copy_image(&mut self, path: &Path) {
         match copy_image_to_clipboard(path) {
-            Ok(_status) => self.record_action_outcome(ContextAction::CopyImage, path, None, Ok(None)),
-            Err(reason) => self.record_action_outcome(ContextAction::CopyImage, path, None, Err(reason)),
+            Ok(_status) => {
+                self.record_action_outcome(ContextAction::CopyImage, path, None, Ok(None))
+            }
+            Err(reason) => {
+                self.record_action_outcome(ContextAction::CopyImage, path, None, Err(reason))
+            }
         }
     }
 
@@ -3995,12 +4148,7 @@ impl RustFehApp {
         );
     }
 
-    fn handle_scan_msg(
-        &mut self,
-        msg: ScanMsg,
-        ctx: &egui::Context,
-        still_scanning: &mut bool,
-    ) {
+    fn handle_scan_msg(&mut self, msg: ScanMsg, ctx: &egui::Context, still_scanning: &mut bool) {
         match msg {
             ScanMsg::Partial {
                 generation,
@@ -4132,8 +4280,8 @@ impl RustFehApp {
         let dir_path = dir.to_path_buf();
         let recursive = self.recursive;
         let on_network = is_network_mount_path(dir);
-        let magick_identify = self.deep_scan_magick
-            && scan_magick_enabled(self.tool_caps.magick_available, dir);
+        let magick_identify =
+            self.deep_scan_magick && scan_magick_enabled(self.tool_caps.magick_available, dir);
         let dir_label = dir.display().to_string();
         self.scan_cancel.store(true, Ordering::Relaxed);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -4142,13 +4290,19 @@ impl RustFehApp {
         self.scan_rx = Some(rx);
 
         thread::spawn(move || {
-            let result = scan_images_streaming(&dir_path, recursive, magick_identify, &cancel, |entries, skipped, _| {
-                let _ = tx.send(ScanMsg::Partial {
-                    generation,
-                    entries: entries.to_vec(),
-                    skipped,
-                });
-            });
+            let result = scan_images_streaming(
+                &dir_path,
+                recursive,
+                magick_identify,
+                &cancel,
+                |entries, skipped, _| {
+                    let _ = tx.send(ScanMsg::Partial {
+                        generation,
+                        entries: entries.to_vec(),
+                        skipped,
+                    });
+                },
+            );
             let skipped = result.inventory.non_image_skipped;
             let truncated = result.inventory.magick_identify_truncated;
             let mut entries = result.entries.clone();
@@ -4244,10 +4398,7 @@ impl RustFehApp {
             let p = target.unwrap_or_else(|| self.images[0].path.clone());
             self.selected = Some(p.clone());
             self.status = post_scan_status(
-                &format!(
-                    "Loaded {} images — Open in feh to view.",
-                    self.images.len()
-                ),
+                &format!("Loaded {} images — Open in feh to view.", self.images.len()),
                 self.feh_available,
             );
             self.log(format!("Auto-selected first image: {}", p.display()));
@@ -4267,7 +4418,10 @@ impl RustFehApp {
             self.status = "No images in filtered list".to_owned();
             return;
         }
-        if !indices.iter().any(|&i| self.images[i].path.as_path() == path) {
+        if !indices
+            .iter()
+            .any(|&i| self.images[i].path.as_path() == path)
+        {
             self.status = "Selected image is not in the filtered filelist".to_owned();
             return;
         }
@@ -4288,6 +4442,21 @@ impl RustFehApp {
         };
 
         self.spawn_round_trip_viewer(&list_path, path, paths, count);
+    }
+
+    /// Open a PINNED image in feh, bypassing `try_open_in_feh`/`resolve_feh_start_path`
+    /// (which mutate `self.selected` as a side effect on fallback) — a pinned action
+    /// must never disturb the live selection. Reuses `open_in_feh`'s existing
+    /// filtered-list membership gate verbatim: if the pinned path is not in the
+    /// live folder's filtered list (e.g. pin survived a folder navigation), this
+    /// fails CLOSED with the existing "not in the filtered filelist" status rather
+    /// than opening the wrong file.
+    fn open_in_feh_pinned(&mut self, path: &Path) {
+        if !self.feh_available {
+            self.status = feh_missing_status();
+            return;
+        }
+        self.open_in_feh(path);
     }
 
     fn spawn_round_trip_viewer(
