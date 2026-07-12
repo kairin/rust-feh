@@ -29,11 +29,12 @@ use rust_feh::ui_logic::{
     scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
     tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
     window_preset_dimensions, window_preset_label, write_feh_filelist, write_feh_filelist_to,
-    EntryLaunchState, InspectorSection, JobMsg, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY,
+    DetachedWindow, EntryLaunchState, InspectorSection, JobMsg, TreeRow, TreeRowKind,
+    FEH_VIEWER_GEOMETRY,
     FEH_VIEWER_ZOOM,
     WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,13 +89,7 @@ fn create_rust_feh_app(
         subfolder_rx: None,
         subfolders_pending: false,
         pending_select_path: None,
-        activity_log_detached: false,
-        session_status_detached: false,
-        deps_detached: false,
-        format_discovery_detached: false,
-        browse_detached: false,
-        image_actions_detached: false,
-        feh_instances_detached: false,
+        detached: HashMap::new(),
         inspector_open: initial_open_sections(deps_section_open, tools_panel_ok),
         inspector_drawer_collapsed: true,
         format_route_open: HashSet::new(),
@@ -428,13 +423,10 @@ struct RustFehApp {
     /// Set by a cross-folder round-trip landing (Phase 4); consumed by
     /// apply_scan_result so the auto-select-first-image doesn't clobber it.
     pending_select_path: Option<PathBuf>,
-    activity_log_detached: bool,
-    session_status_detached: bool,
-    deps_detached: bool,
-    format_discovery_detached: bool,
-    browse_detached: bool,
-    image_actions_detached: bool,
-    feh_instances_detached: bool,
+    /// Detached (floating-window) inspector sections (018 Batch 4); replaces
+    /// 7 discrete `*_detached` bools. Absence = docked; presence = detached.
+    /// Carries per-window pin state (018 Batch 5 target pinning).
+    detached: HashMap<InspectorSection, DetachedWindow>,
     /// Per-section fold state (018 Batch 1); replaces 7 discrete open-bools.
     inspector_open: HashSet<InspectorSection>,
     /// Zone D meta-drawer fold state (018 Batch 2): true = the 7 detail
@@ -1010,7 +1002,7 @@ impl RustFehApp {
                 format!("Activity log — {n} events")
             }
         };
-        Self::header_with_detach_suffix(base, self.activity_log_detached)
+        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::ActivityLog))
     }
 
     fn deps_header_label(&self) -> String {
@@ -1019,17 +1011,17 @@ impl RustFehApp {
         } else {
             "⚠ Dependencies — action needed".to_string()
         };
-        Self::header_with_detach_suffix(base, self.deps_detached)
+        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::Dependencies))
     }
 
     fn format_discovery_header_label(&self) -> String {
         let routes = self.tool_caps.format_routes();
         let base = format!("Format discovery — {} groups", routes.len());
-        Self::header_with_detach_suffix(base, self.format_discovery_detached)
+        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::FormatDiscovery))
     }
 
     fn render_inspector_activity_log(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.activity_log_detached {
+        if self.detached.contains_key(&InspectorSection::ActivityLog) {
             Self::render_detached_placeholder(ui, "Activity log");
             return;
         }
@@ -1039,7 +1031,7 @@ impl RustFehApp {
             "Scan events, feh commands, warnings",
             "Detach window",
         ) {
-            self.activity_log_detached = true;
+            self.detached.insert(InspectorSection::ActivityLog, DetachedWindow::default());
         }
         self.render_activity_log_body(ui, ctx);
     }
@@ -1056,7 +1048,7 @@ impl RustFehApp {
     }
 
     fn render_inspector_dependencies(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.deps_detached {
+        if self.detached.contains_key(&InspectorSection::Dependencies) {
             Self::render_detached_placeholder(ui, "Dependencies");
             return;
         }
@@ -1066,7 +1058,7 @@ impl RustFehApp {
             "feh, ImageMagick, and other PATH tools",
             "Detach window",
         ) {
-            self.deps_detached = true;
+            self.detached.insert(InspectorSection::Dependencies, DetachedWindow::default());
         }
         self.render_deps_section_body(ui, ctx);
     }
@@ -1092,7 +1084,7 @@ impl RustFehApp {
     }
 
     fn render_inspector_format_discovery(&mut self, ui: &mut egui::Ui) {
-        if self.format_discovery_detached {
+        if self.detached.contains_key(&InspectorSection::FormatDiscovery) {
             Self::render_detached_placeholder(ui, "Format discovery");
             return;
         }
@@ -1102,7 +1094,7 @@ impl RustFehApp {
             "Per-format scan, view, and resize routing",
             "Detach window",
         ) {
-            self.format_discovery_detached = true;
+            self.detached.insert(InspectorSection::FormatDiscovery, DetachedWindow::default());
         }
         self.render_format_discovery_body(ui);
     }
@@ -1122,11 +1114,11 @@ impl RustFehApp {
                 }
             }
         };
-        Self::header_with_detach_suffix(base, self.browse_detached)
+        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::Browse))
     }
 
     fn render_inspector_browse(&mut self, ui: &mut egui::Ui) {
-        if self.browse_detached {
+        if self.detached.contains_key(&InspectorSection::Browse) {
             Self::render_detached_placeholder(ui, "Browse");
             return;
         }
@@ -1136,7 +1128,7 @@ impl RustFehApp {
             "Folder, filter, sort, and list view mode",
             "Detach window",
         ) {
-            self.browse_detached = true;
+            self.detached.insert(InspectorSection::Browse, DetachedWindow::default());
         }
         self.render_browse_controls_body(ui);
     }
@@ -1151,7 +1143,7 @@ impl RustFehApp {
                     .unwrap_or_else(|| path.display().to_string())
             ),
         };
-        Self::header_with_detach_suffix(base, self.image_actions_detached)
+        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::ImageActions))
     }
 
     fn render_image_actions_body(&mut self, ui: &mut egui::Ui) {
@@ -1163,8 +1155,19 @@ impl RustFehApp {
         }
     }
 
-    fn render_inspector_image_actions(&mut self, ui: &mut egui::Ui) {
-        if self.image_actions_detached {
+    /// Image-actions body + Image Tools, as a single unit (018 Batch 4 parity
+    /// fix): the detached Image-actions window previously showed only the
+    /// body (missing Image Tools) while the docked inspector showed both.
+    /// Both call sites now go through this one function so they can't drift
+    /// apart again.
+    fn render_image_actions_full(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.render_image_actions_body(ui);
+        ui.separator();
+        self.render_inspector_image_tools(ui, ctx);
+    }
+
+    fn render_inspector_image_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.detached.contains_key(&InspectorSection::ImageActions) {
             Self::render_detached_placeholder(ui, "Image actions");
             return;
         }
@@ -1174,9 +1177,9 @@ impl RustFehApp {
             "Open selected image in feh",
             "Detach window",
         ) {
-            self.image_actions_detached = true;
+            self.detached.insert(InspectorSection::ImageActions, DetachedWindow::default());
         }
-        self.render_image_actions_body(ui);
+        self.render_image_actions_full(ui, ctx);
     }
 
     /// FR-002 default folder resolution for a new launch entry.
@@ -1226,7 +1229,7 @@ impl RustFehApp {
         } else {
             format!("Feh instances — {n}")
         };
-        Self::header_with_detach_suffix(base, self.feh_instances_detached)
+        Self::header_with_detach_suffix(base, self.detached.contains_key(&InspectorSection::FehInstances))
     }
 
     fn persist_launch_entries(&mut self) {
@@ -1592,7 +1595,7 @@ impl RustFehApp {
     }
 
     fn render_inspector_feh_instances(&mut self, ui: &mut egui::Ui) {
-        if self.feh_instances_detached {
+        if self.detached.contains_key(&InspectorSection::FehInstances) {
             Self::render_detached_placeholder(ui, "Feh instances");
             return;
         }
@@ -1601,7 +1604,7 @@ impl RustFehApp {
             "Manage multiple feh launch configurations",
             "Detach window",
         ) {
-            self.feh_instances_detached = true;
+            self.detached.insert(InspectorSection::FehInstances, DetachedWindow::default());
         }
         self.render_feh_instances_body(ui);
     }
@@ -2653,9 +2656,7 @@ impl RustFehApp {
                 self.inspector_open.contains(&InspectorSection::ImageActions),
             ))
             .show(ui, |ui| {
-                self.render_inspector_image_actions(ui);
-                ui.separator();
-                self.render_inspector_image_tools(ui, ctx);
+                self.render_inspector_image_actions(ui, ctx);
             });
         if actions_response.header_response.clicked() {
             self.toggle_inspector_section(InspectorSection::ImageActions);
@@ -2699,7 +2700,7 @@ impl RustFehApp {
                 self.inspector_open.contains(&InspectorSection::SessionStatus),
             ))
             .show(ui, |ui| {
-                if self.scanning && !self.session_status_detached {
+                if self.scanning && !self.detached.contains_key(&InspectorSection::SessionStatus) {
                     egui::Frame::none()
                         .fill(pulse_fill)
                         .stroke(pulse_stroke)
@@ -2789,12 +2790,12 @@ impl RustFehApp {
             format!("Session status — {count}")
         };
 
-        if self.session_status_detached {
+        if self.detached.contains_key(&InspectorSection::SessionStatus) {
             label = Self::header_with_detach_suffix(label, true);
         }
 
         let mut rich = egui::RichText::new(label);
-        if self.scanning && !self.session_status_detached {
+        if self.scanning && !self.detached.contains_key(&InspectorSection::SessionStatus) {
             let pulse = ((time * 5.0).sin() * 0.5 + 0.5) as f32;
             rich = rich.color(egui::Color32::from_rgb(
                 (120.0 + 80.0 * pulse) as u8,
@@ -2973,7 +2974,7 @@ impl RustFehApp {
         total: usize,
         time: f64,
     ) {
-        if self.session_status_detached {
+        if self.detached.contains_key(&InspectorSection::SessionStatus) {
             Self::render_detached_placeholder(ui, "Session status");
             return;
         }
@@ -2983,112 +2984,73 @@ impl RustFehApp {
             "Image count, current status, operation speed tips",
             "Detach window",
         ) {
-            self.session_status_detached = true;
+            self.detached.insert(InspectorSection::SessionStatus, DetachedWindow::default());
         }
         self.render_session_status_body(ui, ctx, shown, total, time);
     }
 
+    /// Window title + default width for a detached inspector section. Pure
+    /// lookup, no `self` borrow, so it can be called freely from inside the
+    /// `render_detached_inspector_windows` loop without fighting the borrow
+    /// checker over the closure's `&mut self` capture.
+    fn detached_window_chrome(section: InspectorSection) -> (&'static str, f32) {
+        match section {
+            InspectorSection::Browse => ("Browse", 520.0),
+            InspectorSection::ImageActions => ("Image actions", 360.0),
+            InspectorSection::FehInstances => ("Feh instances", 420.0),
+            InspectorSection::SessionStatus => ("Session status", 480.0),
+            InspectorSection::ActivityLog => ("Activity log", 520.0),
+            InspectorSection::Dependencies => ("Dependencies", 420.0),
+            InspectorSection::FormatDiscovery => ("Format discovery", 480.0),
+        }
+    }
+
+    /// Detached (floating) inspector windows: one per `InspectorSection`
+    /// present in `self.detached`. Iterates `InspectorSection::ALL` (NEVER
+    /// the `HashMap`, whose iteration order is unspecified) so window
+    /// spawn/z-order is deterministic frame to frame. Body dispatch is a
+    /// `match` (not fn pointers — a `[fn(&mut Self, ...); 7]` table can't
+    /// paper over the differing per-section arg lists — e.g. session status
+    /// needs `shown`/`total`/`time` — without a wrapper closure per entry
+    /// anyway, so a direct `match` is both simpler and avoids `&mut self`
+    /// fn-pointer variance pain).
     fn render_detached_inspector_windows(&mut self, ctx: &egui::Context) {
         let time = ctx.input(|i| i.time);
         let (total, filtered) = self.compute_list_indices();
         let shown = filtered.len();
 
-        if self.browse_detached {
-            let mut open = self.browse_detached;
-            egui::Window::new("Browse")
+        for section in InspectorSection::ALL {
+            if !self.detached.contains_key(&section) {
+                continue;
+            }
+            let (title, default_width) = Self::detached_window_chrome(section);
+            let mut open = true;
+            egui::Window::new(title)
                 .open(&mut open)
                 .collapsible(true)
                 .resizable(true)
-                .default_width(520.0)
-                .show(ctx, |ui| {
-                    self.render_browse_controls_body(ui);
+                .default_width(default_width)
+                .show(ctx, |ui| match section {
+                    InspectorSection::Browse => self.render_browse_controls_body(ui),
+                    InspectorSection::ImageActions => self.render_image_actions_full(ui, ctx),
+                    InspectorSection::FehInstances => self.render_feh_instances_body(ui),
+                    InspectorSection::SessionStatus => {
+                        let pulse_fill = if self.scanning {
+                            Self::activity_pulse_color(time, true)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+                        egui::Frame::none().fill(pulse_fill).show(ui, |ui| {
+                            self.render_session_status_body(ui, ctx, shown, total, time);
+                        });
+                    }
+                    InspectorSection::ActivityLog => self.render_activity_log_body(ui, ctx),
+                    InspectorSection::Dependencies => self.render_deps_section_body(ui, ctx),
+                    InspectorSection::FormatDiscovery => self.render_format_discovery_body(ui),
                 });
-            self.browse_detached = open;
-        }
-
-        if self.image_actions_detached {
-            let mut open = self.image_actions_detached;
-            egui::Window::new("Image actions")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(360.0)
-                .show(ctx, |ui| {
-                    self.render_image_actions_body(ui);
-                });
-            self.image_actions_detached = open;
-        }
-
-        if self.feh_instances_detached {
-            let mut open = self.feh_instances_detached;
-            egui::Window::new("Feh instances")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(420.0)
-                .show(ctx, |ui| {
-                    self.render_feh_instances_body(ui);
-                });
-            self.feh_instances_detached = open;
-        }
-
-        if self.session_status_detached {
-            let mut open = self.session_status_detached;
-            let pulse_fill = if self.scanning {
-                Self::activity_pulse_color(time, true)
-            } else {
-                egui::Color32::TRANSPARENT
-            };
-            egui::Window::new("Session status")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(480.0)
-                .show(ctx, |ui| {
-                    egui::Frame::none().fill(pulse_fill).show(ui, |ui| {
-                        self.render_session_status_body(ui, ctx, shown, total, time);
-                    });
-                });
-            self.session_status_detached = open;
-        }
-
-        if self.activity_log_detached {
-            let mut open = self.activity_log_detached;
-            egui::Window::new("Activity log")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(520.0)
-                .show(ctx, |ui| {
-                    self.render_activity_log_body(ui, ctx);
-                });
-            self.activity_log_detached = open;
-        }
-
-        if self.deps_detached {
-            let mut open = self.deps_detached;
-            egui::Window::new("Dependencies")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(420.0)
-                .show(ctx, |ui| {
-                    self.render_deps_section_body(ui, ctx);
-                });
-            self.deps_detached = open;
-        }
-
-        if self.format_discovery_detached {
-            let mut open = self.format_discovery_detached;
-            egui::Window::new("Format discovery")
-                .open(&mut open)
-                .collapsible(true)
-                .resizable(true)
-                .default_width(480.0)
-                .show(ctx, |ui| {
-                    self.render_format_discovery_body(ui);
-                });
-            self.format_discovery_detached = open;
+            if !open {
+                self.detached.remove(&section);
+            }
         }
     }
 
