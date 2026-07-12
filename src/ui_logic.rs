@@ -6,7 +6,7 @@ use crate::types::{
     FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode, OutputPolicy,
     ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -380,9 +380,9 @@ pub fn action_prefs_path() -> PathBuf {
         .join("action-prefs.json")
 }
 
-/// Persist action preferences using a temp-file + rename write.
-pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
-    let path = action_prefs_path();
+/// Persist action preferences to an explicit path using a temp-file + rename write.
+/// Real (non-test) callers use `save_action_prefs`, a thin wrapper over this.
+pub fn save_action_prefs_to(path: &Path, prefs: &ActionPrefs) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Invalid action-prefs path: {}", path.display()));
     };
@@ -397,17 +397,22 @@ pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
         .map_err(|e| format!("Failed to serialize action preferences: {e}"))?;
     std::fs::write(&temp, data)
         .map_err(|e| format!("Failed to write action preferences {}: {e}", temp.display()))?;
-    std::fs::rename(&temp, &path).map_err(|e| {
+    std::fs::rename(&temp, path).map_err(|e| {
         let _ = std::fs::remove_file(&temp);
         format!("Failed to save action preferences {}: {e}", path.display())
     })?;
     Ok(())
 }
 
-/// Load action preferences; missing or corrupt files recover to defaults.
-pub fn load_action_prefs() -> ActionPrefs {
-    let path = action_prefs_path();
-    let Ok(data) = std::fs::read(&path) else {
+/// Persist action preferences using a temp-file + rename write.
+pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
+    save_action_prefs_to(&action_prefs_path(), prefs)
+}
+
+/// Load action preferences from an explicit path; missing or corrupt files recover to
+/// defaults. Real (non-test) callers use `load_action_prefs`, a thin wrapper over this.
+pub fn load_action_prefs_from(path: &Path) -> ActionPrefs {
+    let Ok(data) = std::fs::read(path) else {
         return ActionPrefs::default();
     };
     match serde_json::from_slice(&data) {
@@ -420,6 +425,11 @@ pub fn load_action_prefs() -> ActionPrefs {
             ActionPrefs::default()
         }
     }
+}
+
+/// Load action preferences; missing or corrupt files recover to defaults.
+pub fn load_action_prefs() -> ActionPrefs {
+    load_action_prefs_from(&action_prefs_path())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1003,6 +1013,35 @@ pub fn add_or_update_asset_in_inventory(
     ));
 }
 
+/// Merge the background converted-detection snapshot into the live `images` list BY PATH,
+/// updating only each matched entry's `status` (018 F1 data-integrity fix).
+///
+/// The converted pass runs off-thread on a *clone* of the scan's entries and its
+/// `ScanMsg::Converted` result can land after the user has already mutated `images` — an
+/// in-place rename (`e.path` changed), a move (`retain` removal), or a processed-add (a
+/// pushed derived-output entry). Wholesale-replacing `images` with the snapshot silently
+/// discards those mutations, so we merge instead:
+///   - path present in BOTH: overwrite ONLY `status` (never `size_bytes` / `asset_status`).
+///     The snapshot is a same-generation refinement of the very entries `images` was built
+///     from and can only upgrade a row to `Converted`, never downgrade it.
+///   - path only in `images` (a renamed-away new path, or a processed-add output the scan
+///     never saw): left untouched.
+///   - path only in `converted_snapshot` (a moved-/renamed-away old path): NOT resurrected.
+///
+/// Takes `&mut [ImageEntry]` (not `&mut Vec`) so the required "entry count never changes"
+/// invariant holds by construction — a mutable slice cannot push or remove.
+pub fn merge_converted_statuses(images: &mut [ImageEntry], converted_snapshot: &[ImageEntry]) {
+    let status_by_path: HashMap<&Path, FileStatus> = converted_snapshot
+        .iter()
+        .map(|e| (e.path.as_path(), e.status))
+        .collect();
+    for entry in images.iter_mut() {
+        if let Some(&status) = status_by_path.get(entry.path.as_path()) {
+            entry.status = status;
+        }
+    }
+}
+
 /// Root tree folder listed count should match inventory native_listed (SC-005).
 pub fn tree_root_listed_matches_inventory(
     tree: &FolderTreeNode,
@@ -1571,10 +1610,115 @@ mod tests {
         ImageEntry::new(PathBuf::from(path))
     }
 
-    /// `action_prefs_path()` resolves to one fixed real path (`~/.config/rust-feh/
-    /// action-prefs.json`); the three `action_prefs_*` tests below read/write it
-    /// directly and must not interleave under cargo's parallel test threads.
-    static ACTION_PREFS_TEST_LOCK: Mutex<()> = Mutex::new(());
+    // --- merge_converted_statuses (018 F1) ---
+
+    fn entry_full(
+        path: &str,
+        size_bytes: Option<u64>,
+        status: FileStatus,
+        asset_status: AssetStatus,
+    ) -> ImageEntry {
+        ImageEntry {
+            path: PathBuf::from(path),
+            size_bytes,
+            status,
+            asset_status,
+        }
+    }
+
+    /// (a) An entry present only in `images` (no matching snapshot path) is preserved
+    /// untouched — covers the rename-away new-path and processed-add cases.
+    #[test]
+    fn merge_converted_preserves_unmatched_images_entry() {
+        let mut images = vec![
+            entry_full("/d/a.png", None, FileStatus::NativeListed, AssetStatus::Regular),
+            // processed-add / renamed-away: path the snapshot never carried
+            entry_full("/d/derived.png", Some(10), FileStatus::NativeListed, AssetStatus::Processed),
+        ];
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        let derived = &images[1];
+        assert_eq!(derived.path, PathBuf::from("/d/derived.png"));
+        assert_eq!(derived.status, FileStatus::NativeListed);
+        assert_eq!(derived.asset_status, AssetStatus::Processed);
+        assert_eq!(derived.size_bytes, Some(10));
+    }
+
+    /// (b) A path present in both flips its `status` to the snapshot's status.
+    #[test]
+    fn merge_converted_flips_matched_status() {
+        let mut images = vec![entry("/d/a.png")]; // NativeListed
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images[0].status, FileStatus::Converted);
+    }
+
+    /// (c) Count-preserving: `images.len()` unchanged and no snapshot-only path leaks in.
+    #[test]
+    fn merge_converted_is_count_preserving_no_leak() {
+        let mut images = vec![
+            entry("/d/a.png"),           // matched
+            entry("/d/only_in_images.png"), // images-only
+        ];
+        let snapshot = vec![
+            entry_full("/d/a.png", None, FileStatus::Converted, AssetStatus::Regular),
+            entry_full("/d/only_in_snapshot.png", None, FileStatus::Converted, AssetStatus::Regular),
+        ];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images.len(), 2);
+        assert!(!images
+            .iter()
+            .any(|e| e.path == PathBuf::from("/d/only_in_snapshot.png")));
+    }
+
+    /// (d) A path present only in the snapshot (a moved-/renamed-away file) is NOT
+    /// resurrected into `images`.
+    #[test]
+    fn merge_converted_does_not_resurrect_snapshot_only_path() {
+        let mut images = vec![entry("/d/a.png")];
+        let snapshot = vec![
+            entry_full("/d/a.png", None, FileStatus::Converted, AssetStatus::Regular),
+            entry_full("/d/moved_away.png", None, FileStatus::Converted, AssetStatus::Regular),
+        ];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images.len(), 1);
+        assert!(!images
+            .iter()
+            .any(|e| e.path == PathBuf::from("/d/moved_away.png")));
+    }
+
+    /// (e) On a matched entry, only `status` changes — `asset_status` and `size_bytes` are
+    /// preserved even though the snapshot carries different values for them.
+    #[test]
+    fn merge_converted_preserves_asset_status_and_size_on_match() {
+        let mut images = vec![entry_full(
+            "/d/a.png",
+            Some(4096),
+            FileStatus::NativeListed,
+            AssetStatus::Processed,
+        )];
+        // snapshot deliberately carries a different size/asset_status to prove they are ignored
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images[0].status, FileStatus::Converted);
+        assert_eq!(images[0].size_bytes, Some(4096));
+        assert_eq!(images[0].asset_status, AssetStatus::Processed);
+    }
 
     /// `feh_filelist_temp_path()` is a single pid-scoped path shared by every test
     /// in this process; the two tests below both write/read it directly and must
@@ -2027,86 +2171,44 @@ mod tests {
 
     #[test]
     fn action_prefs_round_trip_save_and_load() {
-        let _guard = ACTION_PREFS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let path = action_prefs_path();
-        // Save original if it exists
-        let original_backup = std::fs::read(&path).ok();
-
-        // Remove the file if it exists to start fresh
+        let path = test_scratch_dir("action-prefs-round-trip").join("action-prefs.json");
         let _ = std::fs::remove_file(&path);
 
-        // Create and save test prefs
         let test_prefs = ActionPrefs {
             version: 1,
             last_destination: Some(PathBuf::from("/tmp/some/dir")),
         };
 
-        save_action_prefs(&test_prefs).expect("save should succeed");
+        save_action_prefs_to(&path, &test_prefs).expect("save should succeed");
 
-        // Load it back
-        let loaded = load_action_prefs();
+        let loaded = load_action_prefs_from(&path);
 
-        // Verify round-trip equality
         assert_eq!(loaded, test_prefs);
 
-        // Restore original or clean up
         let _ = std::fs::remove_file(&path);
-        if let Some(backup_data) = original_backup {
-            let _ = std::fs::write(&path, backup_data);
-        }
     }
 
     #[test]
     fn action_prefs_missing_file_returns_default() {
-        let _guard = ACTION_PREFS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let path = action_prefs_path();
-        // Save original if it exists
-        let original_backup = std::fs::read(&path).ok();
-
-        // Remove the file if it exists so path is absent
+        let path = test_scratch_dir("action-prefs-missing").join("action-prefs.json");
         let _ = std::fs::remove_file(&path);
 
-        // Load should return default
-        let loaded = load_action_prefs();
+        let loaded = load_action_prefs_from(&path);
         assert_eq!(loaded, ActionPrefs::default());
-
-        // Restore original or clean up
-        let _ = std::fs::remove_file(&path);
-        if let Some(backup_data) = original_backup {
-            let _ = std::fs::write(&path, backup_data);
-        }
     }
 
     #[test]
     fn action_prefs_corrupt_json_recovers_to_default() {
-        let _guard = ACTION_PREFS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let path = action_prefs_path();
-        // Save original if it exists
-        let original_backup = std::fs::read(&path).ok();
-
-        // Create parent dirs if needed
+        let path = test_scratch_dir("action-prefs-corrupt").join("action-prefs.json");
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-
-        // Write garbage bytes (not valid JSON)
         std::fs::write(&path, b"not valid json garbage{").expect("write garbage");
 
-        // Load should return default and log warning
-        let loaded = load_action_prefs();
+        let loaded = load_action_prefs_from(&path);
         assert_eq!(loaded, ActionPrefs::default());
 
-        // Restore original or clean up
         let _ = std::fs::remove_file(&path);
-        if let Some(backup_data) = original_backup {
-            let _ = std::fs::write(&path, backup_data);
-        }
     }
 
     #[test]

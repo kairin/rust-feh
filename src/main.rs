@@ -22,7 +22,8 @@ use rust_feh::ui_logic::{
     format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
     inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
     list_subfolders, list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
-    plan_loss_proof_move, post_scan_status, prepare_fast_work_dir, refresh_entry_and_inventory,
+    merge_converted_statuses, plan_loss_proof_move, post_scan_status, prepare_fast_work_dir,
+    refresh_entry_and_inventory,
     relative_folder, save_action_prefs, save_copy_to, save_launch_list, save_window_prefs,
     scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
     tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
@@ -482,11 +483,15 @@ struct RustFehApp {
     /// Cross-frame cache for the folder-tree rows (reused when `TreeRowsKey` unchanged).
     tree_rows_cache: Vec<TreeRow>,
     tree_rows_cache_key: Option<TreeRowsKey>,
-    /// Cached auto-sized Inspector width (feature 017, Phase 5):
-    /// (pixels_per_point the width was measured at, computed width in px).
+    /// Cached measured static-label text width for the Inspector (feature 017
+    /// Phase 5; re-clamp semantics fixed in 018 F3):
+    /// (pixels_per_point the text was measured at, measured max text width in px
+    /// — NOT the final clamped panel width, which is recomputed every call from
+    /// the live half-viewport so it never goes stale on resize).
     /// Recomputed only when `pixels_per_point` changes — the sole input to
     /// static-label text measurement, since this app never mutates fonts, text
-    /// styles, theme, or zoom. Prevents per-frame re-measurement and width jitter.
+    /// styles, theme, or zoom. Prevents per-frame re-measurement while keeping
+    /// the final width live.
     inspector_width_cache: Option<(f32, f32)>,
 }
 
@@ -1427,7 +1432,7 @@ impl RustFehApp {
                 "Spawning feh for entry {} ({count} images)",
                 entry.id
             ),
-            format!("Launched feh on {}", state.status),
+            format!("Launched feh ({count} images)"),
         );
     }
 
@@ -2873,10 +2878,13 @@ impl RustFehApp {
     /// counts, scan status, selection) changes — a long SMB path must never be
     /// able to peg it wide. Only compile-time string literals are measured (the
     /// `const STATIC_LABELS: &[&str]` type makes it impossible to add runtime
-    /// state here). The result is cached and recomputed only when
-    /// `pixels_per_point` changes — the sole input to text measurement in this
-    /// app (it never mutates fonts, text styles, theme, or zoom; egui's Ctrl +/-
-    /// zoom is also covered because it flows through `pixels_per_point`).
+    /// state here). Only the *measured text width* is cached, keyed on
+    /// `pixels_per_point` — the sole input to text measurement in this app (it
+    /// never mutates fonts, text styles, theme, or zoom; egui's Ctrl +/- zoom is
+    /// also covered because it flows through `pixels_per_point`). The clamp to
+    /// the live half-viewport is recomputed EVERY call (018 F3) so the width
+    /// tracks window resizes instead of going stale at whatever half-viewport
+    /// happened to be in effect the last time `pixels_per_point` changed.
     fn inspector_width(&mut self, ctx: &egui::Context) -> f32 {
         // ONLY literal, hardcoded strings that never change at runtime. NEVER a
         // `self.*` value or `format!()` output. For headers whose live text is
@@ -2918,36 +2926,35 @@ impl RustFehApp {
         const PANEL_CHROME: f32 = 48.0;
 
         let ppp = ctx.pixels_per_point();
-        if let Some((cached_ppp, cached_w)) = self.inspector_width_cache {
-            if cached_ppp == ppp {
-                return cached_w;
+        let max_text = match self.inspector_width_cache {
+            Some((cached_ppp, cached_max_text)) if cached_ppp == ppp => cached_max_text,
+            _ => {
+                // CollapsingHeader labels render at TextStyle::Button; Body == Button
+                // size in egui defaults, so one FontId measures headers, the intro
+                // label, and button captions correctly.
+                let font_id = egui::TextStyle::Button.resolve(&ctx.style());
+                let measured = ctx.fonts(|f| {
+                    STATIC_LABELS
+                        .iter()
+                        .map(|s| {
+                            f.layout_no_wrap((*s).to_owned(), font_id.clone(), egui::Color32::WHITE)
+                                .size()
+                                .x
+                        })
+                        .fold(0.0_f32, f32::max)
+                });
+                self.inspector_width_cache = Some((ppp, measured));
+                measured
             }
-        }
+        };
 
-        // CollapsingHeader labels render at TextStyle::Button; Body == Button size
-        // in egui defaults, so one FontId measures headers, the intro label, and
-        // button captions correctly.
-        let font_id = egui::TextStyle::Button.resolve(&ctx.style());
-        let max_text = ctx.fonts(|f| {
-            STATIC_LABELS
-                .iter()
-                .map(|s| {
-                    f.layout_no_wrap((*s).to_owned(), font_id.clone(), egui::Color32::WHITE)
-                        .size()
-                        .x
-                })
-                .fold(0.0_f32, f32::max)
-        });
-
-        // Clamp to [280, half-viewport]. The half-viewport cap is a HARD upper
-        // bound; when the window is so narrow the cap falls below 280, the cap
-        // wins — and floor == upper here avoids an f32::clamp(min > max) panic.
+        // Clamp to [280, half-viewport] EVERY call (not cached) so width tracks
+        // live window resizes. The half-viewport cap is a HARD upper bound; when
+        // the window is so narrow the cap falls below 280, the cap wins — and
+        // floor == upper here avoids an f32::clamp(min > max) panic.
         let upper = Self::inspector_max_width(ctx);
         let floor = 280.0_f32.min(upper);
-        let w = (max_text + PANEL_CHROME).clamp(floor, upper);
-
-        self.inspector_width_cache = Some((ppp, w));
-        w
+        (max_text + PANEL_CHROME).clamp(floor, upper)
     }
 
     fn render_session_status_body(
@@ -3414,14 +3421,15 @@ impl RustFehApp {
 
     /// One-shot forced scroll offset for a pending round-trip landing (feature
     /// 016, US2 AS1: "the list scrolls to it"); consumes `pending_scroll_path`
-    /// so it only forces the position once, not every frame.
+    /// so it only forces the position once, not every frame. Peek-then-take (018 F5): only consumed once the target row is actually found in `filtered`, so a frame where the list hasn't caught up yet (e.g. mid cross-folder round-trip landing) doesn't lose the pending scroll.
     fn pending_flat_scroll_offset(
         &mut self,
         filtered: &[usize],
         metrics: ImageListMetrics,
     ) -> Option<f32> {
-        let target = self.pending_scroll_path.take()?;
+        let target = self.pending_scroll_path.clone()?;
         let row = filtered.iter().position(|&i| self.images[i].path == target)?;
+        self.pending_scroll_path = None;
         Some((row as f32 * metrics.row_h - metrics.list_height / 2.0).max(0.0))
     }
 
@@ -4081,7 +4089,10 @@ impl RustFehApp {
             } if generation == self.scan_generation => {
                 let inventory =
                     ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
-                self.images = entries;
+                // Merge the background converted snapshot BY PATH instead of a wholesale
+                // replace, so user mutations to self.images (rename/move/processed-add) that
+                // raced this async message are not silently discarded (018 F1).
+                merge_converted_statuses(&mut self.images, &entries);
                 // cache invariant: bump on every self.images mutation
                 self.images_revision = self.images_revision.wrapping_add(1);
                 self.scan_inventory = Some(inventory);
@@ -4459,6 +4470,12 @@ impl RustFehApp {
         }
         self.selected = Some(path.to_path_buf());
         self.pending_scroll_path = Some(path.to_path_buf());
+        if self.scanning {
+            // A rescan of this same folder is already in flight; apply_scan_result's
+            // Complete arm would otherwise default to images[0] once it lands, clobbering
+            // this selection. Arm pending_select_path so it lands here instead (018 F6).
+            self.pending_select_path = Some(path.to_path_buf());
+        }
         let (_, indices) = self.compute_list_indices();
         let in_filter = indices
             .iter()
