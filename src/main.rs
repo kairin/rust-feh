@@ -116,6 +116,10 @@ fn create_rust_feh_app(
         round_trips: Vec::new(),
         next_viewer_id: 0,
         pending_scroll_path: None,
+        images_revision: 0,
+        list_index_cache: std::cell::RefCell::new(None),
+        tree_rows_cache: Vec::new(),
+        tree_rows_cache_key: None,
     })
 }
 
@@ -357,6 +361,24 @@ fn handle_gui_failure(
     Ok(())
 }
 
+#[derive(PartialEq)]
+struct ListIndexKey {
+    revision: u64,
+    current_dir: Option<PathBuf>,
+    search: String,
+    sort_mode: SortMode,
+}
+
+#[derive(PartialEq)]
+struct TreeRowsKey {
+    revision: u64,
+    current_dir: Option<PathBuf>,
+    search: String,
+    sort_mode: SortMode,
+    root_skipped: usize,
+    expanded: std::collections::HashSet<String>,
+}
+
 struct RustFehApp {
     current_dir: Option<PathBuf>,
     images: Vec<ImageEntry>,
@@ -431,6 +453,14 @@ struct RustFehApp {
     /// list's render pass to force-scroll to it once (US2 AS1: "list scrolls
     /// to it").
     pending_scroll_path: Option<PathBuf>,
+    /// Bumped on EVERY mutation of `self.images` (content, order, length, or
+    /// per-entry FileStatus/path). Cache-invalidation key for `compute_list_indices`.
+    images_revision: u64,
+    /// Frame/cross-frame cache for `compute_list_indices`: (key, (total, indices)).
+    list_index_cache: std::cell::RefCell<Option<(ListIndexKey, (usize, Vec<usize>))>>,
+    /// Cross-frame cache for the folder-tree rows (reused when `TreeRowsKey` unchanged).
+    tree_rows_cache: Vec<TreeRow>,
+    tree_rows_cache_key: Option<TreeRowsKey>,
 }
 
 enum FehEntryAction {
@@ -519,6 +549,19 @@ impl RustFehApp {
     }
 
     fn compute_list_indices(&self) -> (usize, Vec<usize>) {
+        {
+            let cache = self.list_index_cache.borrow();
+            if let Some((key, value)) = cache.as_ref() {
+                if key.revision == self.images_revision
+                    && key.sort_mode == self.sort_mode
+                    && key.search == self.search
+                    && key.current_dir.as_deref() == self.current_dir.as_deref()
+                {
+                    return value.clone();
+                }
+            }
+        } // immutable borrow dropped before the mutable borrow below
+
         let total = self.images.len();
         let indices = list_indices(
             &self.images,
@@ -526,7 +569,15 @@ impl RustFehApp {
             &self.search,
             self.sort_mode,
         );
-        (total, indices)
+        let value = (total, indices);
+        let key = ListIndexKey {
+            revision: self.images_revision,
+            current_dir: self.current_dir.clone(),
+            search: self.search.clone(),
+            sort_mode: self.sort_mode,
+        };
+        *self.list_index_cache.borrow_mut() = Some((key, value.clone()));
+        value
     }
 
     fn pick_folder(&mut self) {
@@ -2115,6 +2166,8 @@ impl RustFehApp {
                 }
                 self.log(format!("Renamed {} -> {}", old.display(), dest.display()));
             }
+            // cache invariant: bump on every self.images mutation
+            self.images_revision = self.images_revision.wrapping_add(1);
             self.status = format!("Renamed {} files", outcome.applied.len());
         }
         self.tools_panel.rename_confirm_open = false;
@@ -3243,14 +3296,37 @@ impl RustFehApp {
             .as_ref()
             .map(|i| i.non_image_skipped)
             .unwrap_or(0);
-        let tree_rows = tree_visible_rows(
-            &self.images,
-            list_root,
-            &self.search,
-            self.sort_mode,
-            &self.tree_expanded_paths,
-            root_skipped,
-        );
+
+        let hit = self.tree_rows_cache_key.as_ref().is_some_and(|k| {
+            k.revision == self.images_revision
+                && k.sort_mode == self.sort_mode
+                && k.root_skipped == root_skipped
+                && k.search == self.search
+                && k.current_dir.as_deref() == self.current_dir.as_deref()
+                && k.expanded == self.tree_expanded_paths
+        });
+        if !hit {
+            self.tree_rows_cache = tree_visible_rows(
+                &self.images,
+                list_root,
+                &self.search,
+                self.sort_mode,
+                &self.tree_expanded_paths,
+                root_skipped,
+            );
+            self.tree_rows_cache_key = Some(TreeRowsKey {
+                revision: self.images_revision,
+                current_dir: self.current_dir.clone(),
+                search: self.search.clone(),
+                sort_mode: self.sort_mode,
+                root_skipped,
+                expanded: self.tree_expanded_paths.clone(),
+            });
+        }
+
+        // Move rows out so the show_rows closure can borrow &mut self freely,
+        // then move them back afterward. Avoids a per-frame Vec<TreeRow> clone.
+        let tree_rows = std::mem::take(&mut self.tree_rows_cache);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .max_height(list_height)
@@ -3272,6 +3348,7 @@ impl RustFehApp {
                     }
                 }
             });
+        self.tree_rows_cache = tree_rows; // restore
     }
 
     fn render_central_image_panel(
@@ -3673,6 +3750,8 @@ impl RustFehApp {
             .iter()
             .position(|&i| self.images[i].path == moved_path);
         self.images.retain(|e| e.path != moved_path);
+        // cache invariant: bump on every self.images mutation
+        self.images_revision = self.images_revision.wrapping_add(1);
         let (_, indices_after) = self.compute_list_indices();
         self.selected = if indices_after.is_empty() {
             None
@@ -3753,6 +3832,8 @@ impl RustFehApp {
 
     fn apply_scan_partial(&mut self, entries: Vec<ImageEntry>, skipped: usize) {
         self.images = entries;
+        // cache invariant: bump on every self.images mutation
+        self.images_revision = self.images_revision.wrapping_add(1);
         if self.selected.is_none() {
             if let Some(p) = self.images.first().map(|e| e.path.clone()) {
                 self.selected = Some(p);
@@ -3798,6 +3879,8 @@ impl RustFehApp {
                 let inventory =
                     ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
                 self.images = entries;
+                // cache invariant: bump on every self.images mutation
+                self.images_revision = self.images_revision.wrapping_add(1);
                 self.scan_inventory = Some(inventory);
                 self.log("Converted-status metadata updated (background)");
             }
@@ -3812,8 +3895,18 @@ impl RustFehApp {
                 messages.push(msg);
             }
         }
+        // Each queued Partial carries the FULL accumulated list so far, so an
+        // earlier Partial in the same drain batch is always superseded by a
+        // later one in that batch — apply only the last one to avoid redundant
+        // self.images replaces (and the cache-invalidation bumps that follow).
+        let last_partial_idx = messages
+            .iter()
+            .rposition(|m| matches!(m, ScanMsg::Partial { .. }));
         let mut still_scanning = self.scanning;
-        for msg in messages {
+        for (i, msg) in messages.into_iter().enumerate() {
+            if matches!(msg, ScanMsg::Partial { .. }) && Some(i) != last_partial_idx {
+                continue;
+            }
             self.handle_scan_msg(msg, ctx, &mut still_scanning);
         }
         self.scanning = still_scanning;
@@ -3829,6 +3922,8 @@ impl RustFehApp {
         self.status = "Scanning…".to_string();
         self.selected = None;
         self.images.clear();
+        // cache invariant: bump on every self.images mutation
+        self.images_revision = self.images_revision.wrapping_add(1);
         self.scan_inventory = None;
         self.tree_expanded_paths = default_tree_expanded();
         self.scan_generation = self.scan_generation.wrapping_add(1);
@@ -3900,6 +3995,8 @@ impl RustFehApp {
             result.inventory.magick_identify_truncated,
         );
         self.images = entries;
+        // cache invariant: bump on every self.images mutation
+        self.images_revision = self.images_revision.wrapping_add(1);
         self.scan_inventory = Some(inventory);
 
         if let Some(ref inv) = self.scan_inventory {
