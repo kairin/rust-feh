@@ -1346,12 +1346,23 @@ impl RustFehApp {
     }
 
     fn launch_entry_feh(&mut self, entry: &FehLaunchEntry) {
-        let state = entry_is_launchable(entry, &self.images, self.feh_available);
+        let state = entry_is_launchable(entry, self.feh_available);
         if !state.launchable {
             self.status = format!("Cannot launch: {}", state.status);
             return;
         }
-        let paths = build_entry_filelist(entry, &self.images);
+        let paths = build_entry_filelist(entry);
+        if paths.is_empty() {
+            self.status = format!(
+                "No images in {}",
+                entry
+                    .folder_path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            );
+            return;
+        }
         let start = paths[0].clone();
         let list_path = feh_entry_filelist_path(&entry.id);
         let count = match write_feh_filelist_to(&list_path, &paths) {
@@ -1382,7 +1393,7 @@ impl RustFehApp {
             .launch_entries
             .entries
             .iter()
-            .filter(|e| entry_is_launchable(e, &self.images, self.feh_available).launchable)
+            .filter(|e| entry_is_launchable(e, self.feh_available).launchable)
             .map(|e| e.id.clone())
             .collect();
         let count = ids.len();
@@ -1542,7 +1553,7 @@ impl RustFehApp {
                 .launch_entries
                 .entries
                 .iter()
-                .any(|e| entry_is_launchable(e, &self.images, feh_available).launchable);
+                .any(|e| entry_is_launchable(e, feh_available).launchable);
             if ui
                 .add_enabled(any_launchable, egui::Button::new("Launch All"))
                 .clicked()
@@ -1565,7 +1576,7 @@ impl RustFehApp {
             .show(ui, |ui| {
                 let entries = self.launch_entries.entries.clone();
                 for (idx, entry) in entries.iter().enumerate() {
-                    let state = entry_is_launchable(entry, &self.images, feh_available);
+                    let state = entry_is_launchable(entry, feh_available);
                     Self::render_feh_entry_card(ui, idx, entry, &state, &candidates, &mut action);
                 }
             });

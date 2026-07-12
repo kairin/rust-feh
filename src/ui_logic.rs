@@ -456,68 +456,43 @@ pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
     ))
 }
 
-fn entry_folder_images<'a>(entry: &FehLaunchEntry, images: &'a [ImageEntry]) -> Vec<&'a Path> {
+/// Build deterministic feh filelist paths for one launch entry by scanning its
+/// assigned folder directly (decoupled from the app's current scan list —
+/// feature 017 drill-down: an entry's folder need not be the active folder).
+pub fn build_entry_filelist(entry: &FehLaunchEntry) -> Vec<PathBuf> {
     let Some(folder) = entry.folder_path.as_deref() else {
         return Vec::new();
     };
-    images
-        .iter()
-        .filter(|image| image.path.parent().is_some_and(|p| p == folder))
-        .map(|image| image.path.as_path())
-        .collect()
-}
-
-/// Build deterministic feh filelist paths for one launch entry from current scanned images.
-pub fn build_entry_filelist(entry: &FehLaunchEntry, images: &[ImageEntry]) -> Vec<PathBuf> {
-    entry_folder_images(entry, images)
+    crate::scanner::scan_images(folder, false, false)
+        .entries
         .into_iter()
-        .map(Path::to_path_buf)
+        .map(|e| e.path)
         .collect()
 }
 
-fn entry_launch_block_reason(entry: &FehLaunchEntry) -> Option<&'static str> {
-    let folder = entry.folder_path.as_deref()?;
-    if folder.is_dir() {
-        None
-    } else {
-        Some("Folder not found")
-    }
-}
-
-/// Explain whether a configured launch entry can be launched now.
-pub fn entry_is_launchable(
-    entry: &FehLaunchEntry,
-    images: &[ImageEntry],
-    feh_available: bool,
-) -> EntryLaunchState {
+/// Explain whether a configured launch entry can be launched now. No disk walk
+/// (runs every frame) — only checks folder assignment/existence; emptiness is
+/// detected at launch time (`build_entry_filelist` + launch-time guard).
+pub fn entry_is_launchable(entry: &FehLaunchEntry, feh_available: bool) -> EntryLaunchState {
     if !feh_available {
         return EntryLaunchState {
             launchable: false,
             status: feh_not_installed_launch_status(),
         };
     }
-    if entry.folder_path.is_none() {
-        return EntryLaunchState {
+    match entry.folder_path.as_deref() {
+        None => EntryLaunchState {
             launchable: false,
             status: "Select a folder".to_string(),
-        };
-    }
-    if let Some(reason) = entry_launch_block_reason(entry) {
-        return EntryLaunchState {
+        },
+        Some(f) if !f.is_dir() => EntryLaunchState {
             launchable: false,
-            status: reason.to_string(),
-        };
-    }
-    let count = entry_folder_images(entry, images).len();
-    if count == 0 {
-        return EntryLaunchState {
-            launchable: false,
-            status: "No images".to_string(),
-        };
-    }
-    EntryLaunchState {
-        launchable: true,
-        status: format!("{count} images"),
+            status: "Folder not found".to_string(),
+        },
+        Some(_) => EntryLaunchState {
+            launchable: true,
+            status: "Ready".to_string(),
+        },
     }
 }
 

@@ -94,18 +94,16 @@ fn vs_scan_and_launch_entries_for_two_folders() {
         return;
     }
 
-    let images_a = scan_folder(&folder_a);
-    let images_b = scan_folder(&folder_b);
-    let mut combined = images_a.clone();
-    combined.extend(images_b.clone());
+    scan_folder(&folder_a);
+    scan_folder(&folder_b);
 
     let entry_a = launch_entry("val-a", folder_a.clone());
     let entry_b = launch_entry("val-b", folder_b.clone());
 
-    for (entry, images) in [(&entry_a, &combined), (&entry_b, &combined)] {
-        let state = entry_is_launchable(entry, images, true);
+    for entry in [&entry_a, &entry_b] {
+        let state = entry_is_launchable(entry, true);
         assert!(state.launchable, "{}: {}", entry.id, state.status);
-        let paths = build_entry_filelist(entry, images);
+        let paths = build_entry_filelist(entry);
         assert!(!paths.is_empty());
     }
 }
@@ -120,15 +118,13 @@ fn vs_multi_feh_spawn_two_instances() {
         return;
     }
 
-    let images_a = scan_folder(&folder_a);
-    let images_b = scan_folder(&folder_b);
-    let mut combined = images_a;
-    combined.extend(images_b);
+    scan_folder(&folder_a);
+    scan_folder(&folder_b);
 
     let mut children = Vec::new();
     for (id, folder) in [("val-a", &folder_a), ("val-b", &folder_b)] {
         let entry = launch_entry(id, folder.clone());
-        let paths = build_entry_filelist(&entry, &combined);
+        let paths = build_entry_filelist(&entry);
         let list_path = std::env::temp_dir().join(format!("rust-feh-validate-{id}.txt"));
         write_feh_filelist_to(&list_path, &paths).unwrap();
         let child = spawn_feh_filelist(&list_path, &paths[0]);
@@ -160,8 +156,8 @@ fn sc001_launch_all_five_entries_stays_fast() {
         return;
     }
 
-    let mut combined = scan_folder(&folder_a);
-    combined.extend(scan_folder(&folder_b));
+    scan_folder(&folder_a);
+    scan_folder(&folder_b);
 
     let entries: Vec<FehLaunchEntry> = (0..5)
         .map(|i| {
@@ -177,11 +173,11 @@ fn sc001_launch_all_five_entries_stays_fast() {
     let start = Instant::now();
     let mut children = Vec::new();
     for entry in &entries {
-        let state = entry_is_launchable(entry, &combined, true);
+        let state = entry_is_launchable(entry, true);
         if !state.launchable {
             continue;
         }
-        let paths = build_entry_filelist(entry, &combined);
+        let paths = build_entry_filelist(entry);
         let list_path = std::env::temp_dir().join(format!("rust-feh-sc001-{}.txt", entry.id));
         write_feh_filelist_to(&list_path, &paths).unwrap();
         let child = spawn_feh_filelist(&list_path, &paths[0]);
@@ -297,9 +293,9 @@ fn fr011_feh_not_installed_indicator() {
     let Some((folder_a, _)) = skip_unless_fixtures() else {
         return;
     };
-    let images = scan_folder(&folder_a);
+    scan_folder(&folder_a);
     let entry = launch_entry("fr011", folder_a);
-    let state = entry_is_launchable(&entry, &images, false);
+    let state = entry_is_launchable(&entry, false);
     assert_eq!(state.status, feh_not_installed_launch_status());
     assert!(!state.launchable);
 }

@@ -262,18 +262,13 @@ fn test_entry_filelist_and_launchability() {
     fs::write(&img_a, b"a").unwrap();
     fs::write(&img_b, b"b").unwrap();
     fs::write(&img_other, b"c").unwrap();
-    let images = vec![
-        ImageEntry::new(img_a.clone()),
-        ImageEntry::new(img_b.clone()),
-        ImageEntry::new(img_other),
-    ];
     let entry = launch_entry(Some(dir.clone()));
 
-    let paths = build_entry_filelist(&entry, &images);
+    let paths = build_entry_filelist(&entry);
     assert_eq!(paths, vec![img_a.clone(), img_b.clone()]);
-    let state = entry_is_launchable(&entry, &images, true);
+    let state = entry_is_launchable(&entry, true);
     assert!(state.launchable);
-    assert_eq!(state.status, "2 images");
+    assert_eq!(state.status, "Ready");
 
     let filelist = dir.join("filelist.txt");
     assert_eq!(write_feh_filelist_to(&filelist, &paths).unwrap(), 2);
@@ -291,20 +286,20 @@ fn test_entry_launchability_missing_empty_unassigned_and_feh() {
     let image_dir = temp_test_dir("entry-images");
     let img = image_dir.join("a.png");
     fs::write(&img, b"a").unwrap();
-    let images = vec![ImageEntry::new(img)];
 
     let unassigned = launch_entry(None);
-    assert_eq!(entry_is_launchable(&unassigned, &images, true).status, "Select a folder");
+    assert_eq!(entry_is_launchable(&unassigned, true).status, "Select a folder");
 
     let missing = launch_entry(Some(dir.join("missing")));
-    assert_eq!(entry_is_launchable(&missing, &images, true).status, "Folder not found");
+    assert_eq!(entry_is_launchable(&missing, true).status, "Folder not found");
 
     let empty = launch_entry(Some(dir.clone()));
-    assert_eq!(entry_is_launchable(&empty, &images, true).status, "No images");
+    assert!(entry_is_launchable(&empty, true).launchable);
+    assert!(build_entry_filelist(&empty).is_empty());
 
     let unavailable = launch_entry(Some(image_dir));
     assert_eq!(
-        entry_is_launchable(&unavailable, &images, false).status,
+        entry_is_launchable(&unavailable, false).status,
         "feh not installed"
     );
 
