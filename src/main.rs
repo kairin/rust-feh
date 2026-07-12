@@ -60,7 +60,7 @@ fn create_rust_feh_app(
         debug_logs: vec![],
         search: String::new(),
         prior_search: String::new(),
-        recursive: true,
+        recursive: false,
         deep_scan_magick: false,
         feh_available,
         tool_caps,
@@ -3232,7 +3232,12 @@ impl RustFehApp {
     }
 
     fn toggle_tree_folder(&mut self, folder_path: &str) {
-        self.selected_tree_folder = Some(PathBuf::from(folder_path));
+        let abs = match &self.current_dir {
+            Some(root) if folder_path == "." => root.clone(),
+            Some(root) => root.join(folder_path),
+            None => PathBuf::from(folder_path),
+        };
+        self.selected_tree_folder = Some(abs);
         let path_key = folder_path.to_string();
         if self.tree_expanded_paths.contains(&path_key) {
             self.tree_expanded_paths.remove(&path_key);
@@ -3926,6 +3931,7 @@ impl RustFehApp {
         self.images.clear();
         // cache invariant: bump on every self.images mutation
         self.images_revision = self.images_revision.wrapping_add(1);
+        self.selected_tree_folder = None;
         self.scan_inventory = None;
         self.tree_expanded_paths = default_tree_expanded();
         self.scan_generation = self.scan_generation.wrapping_add(1);
