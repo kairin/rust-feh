@@ -5,6 +5,8 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 use walkdir::WalkDir;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::types::{FileStatus, ImageEntry, ScanInventory};
 
@@ -52,7 +54,8 @@ pub struct ScanResult {
 
 /// Scan `dir` for images. `magick_identify` runs per-file ImageMagick probes (slow; off by default).
 pub fn scan_images(dir: &Path, recursive: bool, magick_identify: bool) -> ScanResult {
-    scan_images_streaming(dir, recursive, magick_identify, |_, _, _| {})
+    let cancel = Arc::new(AtomicBool::new(false));
+    scan_images_streaming(dir, recursive, magick_identify, &cancel, |_, _, _| {})
 }
 
 struct ScanWalkState<'a> {
@@ -63,6 +66,7 @@ struct ScanWalkState<'a> {
     since_last_emit: &'a mut usize,
     magick_bin: Option<&'a std::path::Path>,
     magick_identify: bool,
+    cancel: &'a Arc<AtomicBool>,
 }
 
 fn emit_scan_partial(
@@ -95,6 +99,9 @@ fn try_magick_probe(path: std::path::PathBuf, state: &mut ScanWalkState<'_>) -> 
     }
     if *state.magick_identify_calls >= MAGICK_IDENTIFY_CAP {
         *state.magick_truncated = true;
+        return false;
+    }
+    if state.cancel.load(Ordering::Relaxed) {
         return false;
     }
     if !is_magick_image(&path, state.magick_bin) {
@@ -141,6 +148,7 @@ fn walk_scan_files(
     recursive: bool,
     magick_identify: bool,
     magick_bin: Option<&Path>,
+    cancel: &Arc<AtomicBool>,
     on_partial: &mut impl FnMut(&[ImageEntry], usize, bool),
 ) -> (Vec<ImageEntry>, Vec<String>, usize, bool) {
     let mut entries = Vec::new();
@@ -155,6 +163,9 @@ fn walk_scan_files(
         WalkDir::new(dir).follow_links(false).max_depth(1)
     };
     for entry in walker.into_iter() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         match entry {
             Ok(e) if e.file_type().is_file() => {
                 let mut state = ScanWalkState {
@@ -165,6 +176,7 @@ fn walk_scan_files(
                     since_last_emit: &mut since_last_emit,
                     magick_bin,
                     magick_identify,
+                    cancel,
                 };
                 classify_walk_file(e.path().to_path_buf(), &mut state, on_partial);
             }
@@ -180,11 +192,12 @@ pub fn scan_images_streaming(
     dir: &Path,
     recursive: bool,
     magick_identify: bool,
+    cancel: &Arc<AtomicBool>,
     mut on_partial: impl FnMut(&[ImageEntry], usize, bool),
 ) -> ScanResult {
     let magick_bin = resolve_magick_bin(magick_identify);
     let (mut entries, warnings, non_image_skipped, magick_truncated) =
-        walk_scan_files(dir, recursive, magick_identify, magick_bin.as_deref(), &mut on_partial);
+        walk_scan_files(dir, recursive, magick_identify, magick_bin.as_deref(), cancel, &mut on_partial);
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     let inventory = ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
     ScanResult {

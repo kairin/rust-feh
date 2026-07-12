@@ -13,7 +13,7 @@ use rust_feh::types::{
     WindowPreferences, WindowSizePreset,
 };
 use rust_feh::ui_logic::{
-    add_or_update_asset_in_inventory, apply_converted_detection, apply_rename_pairs,
+    add_or_update_asset_in_inventory, apply_converted_detection_cancellable, apply_rename_pairs,
     build_entry_filelist, clamp_window_size, cleanup_stale_handoffs, collision_suffixed_path,
     compute_output_path, copy_image_to_clipboard, crop_preview_pixels, default_tree_expanded,
     entry_is_launchable, execute_move_plan, expand_rename_pattern, feh_entry_filelist_path,
@@ -78,6 +78,7 @@ fn create_rust_feh_app(
         tree_expanded_paths: default_tree_expanded(),
         scan_generation: 0,
         scan_rx: None,
+        scan_cancel: Arc::new(AtomicBool::new(false)),
         activity_log_detached: false,
         session_status_detached: false,
         deps_detached: false,
@@ -408,6 +409,7 @@ struct RustFehApp {
     tree_expanded_paths: HashSet<String>,
     scan_generation: u64,
     scan_rx: Option<Receiver<ScanMsg>>,
+    scan_cancel: Arc<AtomicBool>,
     activity_log_detached: bool,
     session_status_detached: bool,
     deps_detached: bool,
@@ -3936,11 +3938,14 @@ impl RustFehApp {
         let magick_identify = self.deep_scan_magick
             && scan_magick_enabled(self.tool_caps.magick_available, dir);
         let dir_label = dir.display().to_string();
+        self.scan_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.scan_cancel = cancel.clone();
         let (tx, rx) = mpsc::channel();
         self.scan_rx = Some(rx);
 
         thread::spawn(move || {
-            let result = scan_images_streaming(&dir_path, recursive, magick_identify, |entries, skipped, _| {
+            let result = scan_images_streaming(&dir_path, recursive, magick_identify, &cancel, |entries, skipped, _| {
                 let _ = tx.send(ScanMsg::Partial {
                     generation,
                     entries: entries.to_vec(),
@@ -3956,7 +3961,10 @@ impl RustFehApp {
                 result,
             });
             thread::spawn(move || {
-                apply_converted_detection(&mut entries);
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                apply_converted_detection_cancellable(&mut entries, &cancel);
                 let _ = tx.send(ScanMsg::Converted {
                     generation,
                     entries,

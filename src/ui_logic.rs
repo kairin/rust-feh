@@ -1039,6 +1039,25 @@ pub fn apply_converted_detection(entries: &mut [ImageEntry]) -> usize {
     n
 }
 
+/// Cancellable variant of `apply_converted_detection`: checks `cancel` before each stat, so a
+/// superseded scan's converted-sibling pass stops promptly instead of stat-storming every file.
+pub fn apply_converted_detection_cancellable(
+    entries: &mut [ImageEntry],
+    cancel: &Arc<AtomicBool>,
+) -> usize {
+    let mut n = 0usize;
+    for entry in entries.iter_mut() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if detect_converted_status(&entry.path) {
+            entry.status = FileStatus::Converted;
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn finalize_scan_entries(
     mut entries: Vec<ImageEntry>,
     non_image_skipped: usize,
@@ -1769,6 +1788,24 @@ mod tests {
         std::fs::write(dir.join("photo_processed.png"), b"x").unwrap();
         assert!(detect_converted_status(&source));
         assert!(!detect_converted_status(&dir.join("other.jpg")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_converted_detection_cancellable_exits_early_when_precancel() {
+        let dir = std::env::temp_dir().join("rust-feh-cancellable-converted-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sunset_processed.jpg");
+        std::fs::write(&path, b"x").unwrap();
+
+        let mut entries = vec![entry(path.to_str().unwrap())];
+        let cancel = Arc::new(AtomicBool::new(true));
+        let n = apply_converted_detection_cancellable(&mut entries, &cancel);
+
+        assert_eq!(n, 0);
+        assert_eq!(entries[0].status, FileStatus::NativeListed);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
