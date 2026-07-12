@@ -1046,7 +1046,16 @@ pub fn merge_converted_statuses(images: &mut [ImageEntry], converted_snapshot: &
         .collect();
     for entry in images.iter_mut() {
         if let Some(&status) = status_by_path.get(entry.path.as_path()) {
-            entry.status = status;
+            // Upgrade-only (018 FIX-11): the converted pass only ever PROMOTES a
+            // row to `Converted`; it never produces a downgrade. Applying the
+            // snapshot status unconditionally could still downgrade a row a live
+            // mutation already advanced to `Converted` after the snapshot was
+            // cloned (e.g. an in-app tool op) if that path's snapshot copy was
+            // captured pre-conversion. Guard the write to a genuine upgrade so a
+            // stale snapshot can never regress a live `Converted` row.
+            if status == FileStatus::Converted {
+                entry.status = FileStatus::Converted;
+            }
         }
     }
 }
@@ -1646,6 +1655,139 @@ pub fn initial_open_sections(
         open.insert(InspectorSection::FormatDiscovery);
     }
     open
+}
+
+/// Height of the Zone D drawer's inner scroll body when expanded (018 Batch 2;
+/// pure math extracted for FIX-8 unit testing). 40% of the full inspector
+/// content height, clamped so the drawer never starves Zone C nor grows
+/// unbounded.
+pub fn sections_drawer_body_height(full_h: f32) -> f32 {
+    (full_h * 0.4).clamp(180.0, 360.0)
+}
+
+/// The Zone D meta-drawer toggle row height (the "▶ Details" line).
+pub const DRAWER_TOGGLE_ROW_H: f32 = 24.0;
+
+/// Total vertical space Zone D reserves from Zone C (018 Batch 2; pure math
+/// extracted for FIX-8 unit testing). Collapsed = just the toggle row; expanded
+/// = toggle row plus the bounded scroll body.
+pub fn sections_drawer_reserved_height(full_h: f32, collapsed: bool) -> f32 {
+    if collapsed {
+        DRAWER_TOGGLE_ROW_H
+    } else {
+        DRAWER_TOGGLE_ROW_H + sections_drawer_body_height(full_h)
+    }
+}
+
+/// Edge-triggered auto-expand policy for the inspector fold state (018 FIX-1,
+/// FR-003). Pure and egui-free so the whole "rising edge opens once / falling
+/// edge retracts / user-close latch" contract is unit-testable in isolation.
+///
+/// The three triggers (scan active → Session status, no folder → Browse,
+/// missing tool → Dependencies) are each an independent SCOPE. Within a scope
+/// the machine opens the target section ONCE on the rising edge and retracts it
+/// on the falling edge; a manual user close latches suppression so the machine
+/// does not fight the user for the rest of that scope; a manual user open makes
+/// the section user-owned so retraction leaves it in place. The shared Zone D
+/// drawer is reference-counted through `auto_open`: it re-collapses only when the
+/// machine no longer keeps any section open AND the user has not taken the drawer
+/// over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutoExpandState {
+    /// Sections the machine opened and still owns (the only retraction targets).
+    pub auto_open: HashSet<InspectorSection>,
+    /// Sections the user manually closed during the current scope; the machine
+    /// will not re-open them until `begin_scope` lifts the latch.
+    pub suppressed: HashSet<InspectorSection>,
+    /// True when the machine un-collapsed the drawer and the user has not toggled
+    /// it since — lets the last retraction re-collapse it (SC-001 / US1-AS2).
+    pub drawer_auto_opened: bool,
+}
+
+impl AutoExpandState {
+    /// Seed machine ownership from the startup fold set (`initial_open_sections`)
+    /// so startup auto-opens retract through the same mechanism. The drawer is
+    /// NOT claimed here (startup keeps it collapsed — FR-003 "startup semantics
+    /// unchanged").
+    pub fn seeded(initial_open: &HashSet<InspectorSection>) -> Self {
+        AutoExpandState {
+            auto_open: initial_open.clone(),
+            suppressed: HashSet::new(),
+            drawer_auto_opened: false,
+        }
+    }
+
+    /// A new trigger scope for `section` begins (new scan attempt, new no-folder
+    /// episode, or fresh tool-missing detection): the previous scope's user-close
+    /// suppression no longer applies.
+    pub fn begin_scope(&mut self, section: InspectorSection) {
+        self.suppressed.remove(&section);
+    }
+
+    /// Rising-edge request: the machine wants `section` open. No-op if the user
+    /// suppressed it this scope. Claims machine ownership of any section it newly
+    /// opens, and un-collapses the drawer for an active trigger (US1-AS3
+    /// "expanding the drawer"), recording drawer ownership only when it actually
+    /// moves the drawer.
+    pub fn request_open(
+        &mut self,
+        section: InspectorSection,
+        open: &mut HashSet<InspectorSection>,
+        drawer_collapsed: &mut bool,
+    ) {
+        if self.suppressed.contains(&section) {
+            return;
+        }
+        if open.insert(section) {
+            self.auto_open.insert(section);
+        }
+        if *drawer_collapsed {
+            *drawer_collapsed = false;
+            self.drawer_auto_opened = true;
+        }
+    }
+
+    /// Falling-edge retraction: close `section` only if the machine still owns it
+    /// (a user-opened section is preserved). When no machine-owned section remains
+    /// open, release drawer ownership; if the machine owned the drawer and nothing
+    /// else is open, re-collapse it.
+    pub fn retract(
+        &mut self,
+        section: InspectorSection,
+        open: &mut HashSet<InspectorSection>,
+        drawer_collapsed: &mut bool,
+    ) {
+        self.suppressed.remove(&section);
+        if self.auto_open.remove(&section) {
+            open.remove(&section);
+        }
+        if self.auto_open.is_empty() {
+            if self.drawer_auto_opened && open.is_empty() {
+                *drawer_collapsed = true;
+            }
+            self.drawer_auto_opened = false;
+        }
+    }
+
+    /// The user manually closed `section`: drop machine ownership and latch
+    /// suppression so the machine will not re-open it this scope (FR-003).
+    pub fn note_user_close(&mut self, section: InspectorSection) {
+        self.auto_open.remove(&section);
+        self.suppressed.insert(section);
+    }
+
+    /// The user manually opened `section`: it becomes user-owned (removed from
+    /// machine ownership and un-suppressed), so a later retraction leaves it open.
+    pub fn note_user_open(&mut self, section: InspectorSection) {
+        self.auto_open.remove(&section);
+        self.suppressed.remove(&section);
+    }
+
+    /// The user toggled the drawer itself: they now own its open/closed state, so
+    /// a later retraction must not move it.
+    pub fn note_user_drawer_toggle(&mut self) {
+        self.drawer_auto_opened = false;
+    }
 }
 
 /// A pinnable target for a detached inspector panel (018 decision 4). Only one
@@ -3040,5 +3182,188 @@ mod tests {
         let dir2 = viewer_profile_dir();
         assert_eq!(dir1, dir2, "path should be stable across calls");
         assert!(dir2.is_dir(), "viewer profile dir should still exist after second call");
+    }
+
+    // --- merge_converted_statuses upgrade-only (018 FIX-11) ---
+
+    /// A live row already advanced to `Converted` is NEVER downgraded by a stale
+    /// snapshot that still carries the pre-conversion status for that path.
+    #[test]
+    fn merge_converted_never_downgrades_live_converted() {
+        let mut images = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Processed,
+        )];
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::NativeListed,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images[0].status, FileStatus::Converted);
+        assert_eq!(images[0].asset_status, AssetStatus::Processed);
+    }
+
+    // --- inventory rebuilt from the LIVE list after a Converted merge (018 FIX-2) ---
+
+    /// After a live mutation (a moved-away entry) races the async Converted
+    /// message, the inventory MUST be rebuilt from `self.images` (live), not the
+    /// stale scan-time snapshot — otherwise counts revert and break SC-005.
+    #[test]
+    fn inventory_rebuilt_from_live_list_after_converted_merge_fix2() {
+        // Scan-time snapshot captured 3 native images.
+        let snapshot = vec![entry("/d/a.png"), entry("/d/b.png"), entry("/d/c.png")];
+        // User moved c.png away before the Converted message landed → live has 2.
+        let mut images = vec![entry("/d/a.png"), entry("/d/b.png")];
+        merge_converted_statuses(&mut images, &snapshot);
+        let live = ScanInventory::from_entries(&images, 0, false);
+        let stale = ScanInventory::from_entries(&snapshot, 0, false);
+        assert_eq!(
+            live.native_listed, 2,
+            "inventory must reflect the live list"
+        );
+        assert_eq!(
+            stale.native_listed, 3,
+            "the snapshot would over-count (the bug)"
+        );
+    }
+
+    // --- Zone D drawer height math (018 FIX-8) ---
+
+    #[test]
+    fn sections_drawer_body_height_clamps_to_180_360() {
+        assert_eq!(sections_drawer_body_height(100.0), 180.0); // 40 → floor
+        assert_eq!(sections_drawer_body_height(1000.0), 360.0); // 400 → ceil
+        assert_eq!(sections_drawer_body_height(600.0), 240.0); // in range
+    }
+
+    #[test]
+    fn sections_drawer_reserved_height_collapsed_vs_expanded() {
+        assert_eq!(
+            sections_drawer_reserved_height(600.0, true),
+            DRAWER_TOGGLE_ROW_H
+        );
+        assert_eq!(
+            sections_drawer_reserved_height(600.0, false),
+            DRAWER_TOGGLE_ROW_H + 240.0
+        );
+    }
+
+    // --- AutoExpandState edge/latch policy (018 FIX-1, FR-003) ---
+
+    #[test]
+    fn auto_expand_rising_edge_inserts_once() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(open.contains(&InspectorSection::SessionStatus));
+        assert!(!collapsed, "rising edge un-collapses the drawer");
+        assert!(st.drawer_auto_opened);
+        // Idempotent: a second request in the same scope changes nothing.
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert_eq!(open.len(), 1);
+        assert_eq!(st.auto_open.len(), 1);
+    }
+
+    #[test]
+    fn auto_expand_falling_edge_retracts_auto_inserted_only() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        // A separately, user-opened section (not machine-owned).
+        open.insert(InspectorSection::ActivityLog);
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(
+            !open.contains(&InspectorSection::SessionStatus),
+            "auto section retracted"
+        );
+        assert!(
+            open.contains(&InspectorSection::ActivityLog),
+            "user section preserved"
+        );
+        assert!(!collapsed, "drawer stays open while any section is open");
+    }
+
+    #[test]
+    fn auto_expand_user_close_suppresses_reopen_within_scope() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        // User closes it (the header toggle removes from `open` and latches).
+        open.remove(&InspectorSection::SessionStatus);
+        st.note_user_close(InspectorSection::SessionStatus);
+        // Machine re-asserts in the same scope → suppressed, stays closed.
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(!open.contains(&InspectorSection::SessionStatus));
+        // A new scope lifts the latch.
+        st.begin_scope(InspectorSection::SessionStatus);
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(open.contains(&InspectorSection::SessionStatus));
+    }
+
+    #[test]
+    fn auto_expand_user_open_preserved_on_retraction() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        // Drawer already open by the user; user manually opens a section
+        // (user-owned, never machine-owned).
+        let mut collapsed = false;
+        open.insert(InspectorSection::SessionStatus);
+        st.note_user_open(InspectorSection::SessionStatus);
+        // A trigger's falling edge fires.
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(
+            open.contains(&InspectorSection::SessionStatus),
+            "user-open survives retraction"
+        );
+    }
+
+    #[test]
+    fn auto_expand_drawer_recollapses_after_last_retraction() {
+        // SC-001 / US1-AS2: scan opens the drawer, completion returns it to collapsed.
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(!collapsed);
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(open.is_empty());
+        assert!(collapsed, "drawer returns to collapsed");
+        assert!(!st.drawer_auto_opened);
+    }
+
+    #[test]
+    fn auto_expand_user_drawer_toggle_blocks_recollapse() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        st.note_user_drawer_toggle(); // user takes drawer ownership
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(!open.contains(&InspectorSection::SessionStatus));
+        assert!(!collapsed, "drawer stays as the user left it");
+    }
+
+    #[test]
+    fn auto_expand_seeded_owns_startup_open_sections() {
+        let initial = initial_open_sections(true, true); // Dependencies open at startup
+        let st = AutoExpandState::seeded(&initial);
+        assert!(st.auto_open.contains(&InspectorSection::Dependencies));
+        assert!(!st.drawer_auto_opened, "startup keeps the drawer collapsed");
+    }
+
+    #[test]
+    fn initial_open_sections_semantics_unchanged() {
+        assert!(initial_open_sections(false, true).is_empty());
+        assert!(initial_open_sections(true, true).contains(&InspectorSection::Dependencies));
+        assert!(initial_open_sections(false, false).contains(&InspectorSection::FormatDiscovery));
+        // Browse is NEVER auto-opened at startup by this fn (edge machine owns that).
+        assert!(!initial_open_sections(true, false).contains(&InspectorSection::Browse));
     }
 }

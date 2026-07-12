@@ -24,12 +24,13 @@ use rust_feh::ui_logic::{
     join_activity_log, list_indices, list_subfolders, list_view_mode_label, load_action_prefs,
     load_launch_list, load_window_prefs, merge_converted_statuses, plan_loss_proof_move,
     post_scan_status, prepare_fast_work_dir, relative_folder, save_action_prefs, save_copy_to,
-    save_launch_list, save_window_prefs, scan_magick_enabled, showing_count_label, sort_mode_label,
-    spawn_job, tree_file_glyph, tree_visible_rows, validate_handoff, viewer_profile_dir,
-    viewer_spawn_command, window_preset_dimensions, window_preset_label, write_feh_filelist,
-    write_feh_filelist_to, DetachedWindow, EntryLaunchState, InspectorSection, JobMsg,
-    PanelContext, PanelPin, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM,
-    WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
+    save_launch_list, save_window_prefs, scan_magick_enabled, sections_drawer_body_height,
+    sections_drawer_reserved_height, showing_count_label, sort_mode_label, spawn_job,
+    tree_file_glyph, tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
+    window_preset_dimensions, window_preset_label, write_feh_filelist, write_feh_filelist_to,
+    AutoExpandState, DetachedWindow, EntryLaunchState, InspectorSection, JobMsg, PanelContext,
+    PanelPin, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM, WINDOW_MAX_RESIZABLE,
+    WINDOW_MIN_RESIZABLE,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -53,6 +54,10 @@ fn create_rust_feh_app(
     // viewers that outlived rust-feh (contract: "stale handoff files under
     // runtime cache are cleaned at next startup").
     let _ = cleanup_stale_handoffs();
+    let initial_open = initial_open_sections(deps_section_open, tools_panel_ok);
+    // Seed the auto-expand machine's ownership from the startup fold set so
+    // startup auto-opens retract through the edge machine (018 FIX-1).
+    let auto_expand = AutoExpandState::seeded(&initial_open);
     Box::new(RustFehApp {
         current_dir: None,
         images: vec![],
@@ -87,8 +92,10 @@ fn create_rust_feh_app(
         subfolders_pending: false,
         pending_select_path: None,
         detached: HashMap::new(),
-        inspector_open: initial_open_sections(deps_section_open, tools_panel_ok),
+        inspector_open: initial_open,
         inspector_drawer_collapsed: true,
+        auto_expand,
+        prior_folder_present: true,
         format_route_open: HashSet::new(),
         start_folder_loaded: false,
         image_tools: ImageToolsService::new(None),
@@ -438,6 +445,16 @@ struct RustFehApp {
     /// sections are hidden behind the "Details" toggle. Collapsed by default so
     /// the file list (Zone C) is the primary content on launch.
     inspector_drawer_collapsed: bool,
+    /// Edge-triggered auto-expand policy state (018 FIX-1, FR-003): tracks which
+    /// sections/drawer the machine opened so it can retract them and honor a
+    /// user-close latch. Drives `inspector_open`/`inspector_drawer_collapsed` at
+    /// scan/no-folder/tool-missing edges instead of the old per-frame inserts.
+    auto_expand: AutoExpandState,
+    /// Previous frame's `current_dir.is_some()`, for edge-detecting the
+    /// no-folder ↔ folder-loaded transitions that drive Browse auto-expand
+    /// (018 FIX-1). Seeded `true` so a first frame with no folder fires the
+    /// no-folder rising edge (Browse opens — SC-001).
+    prior_folder_present: bool,
     image_tools: ImageToolsService,
     cache_config: CacheConfig,
     tools_panel: ImageToolsPanelState,
@@ -498,6 +515,9 @@ enum FehEntryAction {
 struct ImageListMetrics {
     list_height: f32,
     folder_col_w: f32,
+    /// Fixed width of the filename column (018 FIX-10): lets a long filename
+    /// truncate instead of clipping/jittering the Status column at 440px.
+    name_col_w: f32,
     status_col_w: f32,
     row_h: f32,
 }
@@ -623,6 +643,39 @@ impl RustFehApp {
         self.request_subfolders(dir);
     }
 
+    /// Edge-detect the no-folder ↔ folder-loaded transition and drive Browse
+    /// auto-expand through the same machine as the scan/tool triggers (018
+    /// FIX-1). `current_dir` has many mutation sites, so this compares against a
+    /// stored flag rather than hooking each one. Seeded `prior_folder_present =
+    /// true`, so a first frame with no folder fires the no-folder rising edge
+    /// (Browse opens — SC-001), while a start-folder that loads during frame 1
+    /// (before this runs) leaves `present == prior` and never opens Browse
+    /// (maintainer clarification: "folder already set at launch → Browse stays
+    /// folded").
+    fn sync_auto_expand_folder_edge(&mut self) {
+        let present = self.current_dir.is_some();
+        if present == self.prior_folder_present {
+            return;
+        }
+        self.prior_folder_present = present;
+        if present {
+            // Folder loaded → falling edge for Browse: retract it.
+            self.auto_expand.retract(
+                InspectorSection::Browse,
+                &mut self.inspector_open,
+                &mut self.inspector_drawer_collapsed,
+            );
+        } else {
+            // No folder → rising edge for Browse (a fresh no-folder scope).
+            self.auto_expand.begin_scope(InspectorSection::Browse);
+            self.auto_expand.request_open(
+                InspectorSection::Browse,
+                &mut self.inspector_open,
+                &mut self.inspector_drawer_collapsed,
+            );
+        }
+    }
+
     fn pick_folder(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             self.log(format!("User chose folder: {}", dir.display()));
@@ -673,6 +726,20 @@ impl RustFehApp {
 
     fn feh_open_ready(&self) -> bool {
         self.feh_available && !self.compute_list_indices().1.is_empty()
+    }
+
+    /// Whether `path` is a member of the current filtered/sorted list (018
+    /// FIX-3/FIX-4). This in-memory membership check is the pin-staleness signal
+    /// for the detached Image-actions window — it replaces the per-frame
+    /// blocking `Path::exists()` stat (a 017-class UI-freeze risk on SMB mounts)
+    /// AND gates the pinned "Open in feh" action, which needs the pinned path to
+    /// be in the live filelist it builds. Absent ⇒ the pin was moved/deleted or
+    /// the user navigated to a different folder ⇒ disable pinned actions.
+    fn pinned_path_in_filtered_list(&self, path: &Path) -> bool {
+        let (_, indices) = self.compute_list_indices();
+        indices
+            .iter()
+            .any(|&i| self.images[i].path.as_path() == path)
     }
 
     /// Keep selection aligned with the filtered list (FR-002 filelist / --start-at).
@@ -807,11 +874,33 @@ impl RustFehApp {
         self.tool_caps = ToolCapabilities::detect();
         self.feh_available = self.tool_caps.feh_available;
         if self.tool_caps.has_missing_required() {
-            self.inspector_open.insert(InspectorSection::Dependencies);
-            self.inspector_open
-                .insert(InspectorSection::FormatDiscovery);
+            // Recheck still finds a missing tool → rising edge (fresh detection
+            // scope) for the tool sections (018 FIX-1/FIX-7).
+            for section in [
+                InspectorSection::Dependencies,
+                InspectorSection::FormatDiscovery,
+            ] {
+                self.auto_expand.begin_scope(section);
+                self.auto_expand.request_open(
+                    section,
+                    &mut self.inspector_open,
+                    &mut self.inspector_drawer_collapsed,
+                );
+            }
         } else {
-            self.inspector_open.remove(&InspectorSection::Dependencies);
+            // All tools OK → symmetric falling edge: retract BOTH auto-opened
+            // tool sections (018 FIX-7 — previously FormatDiscovery was never
+            // removed on recovery).
+            for section in [
+                InspectorSection::Dependencies,
+                InspectorSection::FormatDiscovery,
+            ] {
+                self.auto_expand.retract(
+                    section,
+                    &mut self.inspector_open,
+                    &mut self.inspector_drawer_collapsed,
+                );
+            }
         }
         self.log(format!(
             "Rechecked tools: feh={}, magick={}",
@@ -823,6 +912,14 @@ impl RustFehApp {
         self.feh_available = false;
         self.tool_caps.feh_available = false;
         self.status = feh_missing_status();
+        // Mid-session tool loss is a rising edge (an event) → surface
+        // Dependencies + expand the drawer via the same machine (018 FIX-7).
+        self.auto_expand.begin_scope(InspectorSection::Dependencies);
+        self.auto_expand.request_open(
+            InspectorSection::Dependencies,
+            &mut self.inspector_open,
+            &mut self.inspector_drawer_collapsed,
+        );
         self.log("feh marked unavailable after spawn failure".to_owned());
     }
 
@@ -950,8 +1047,13 @@ impl RustFehApp {
     fn toggle_inspector_section(&mut self, section: InspectorSection) {
         if self.inspector_open.contains(&section) {
             self.inspector_open.remove(&section);
+            // Manual close latches suppression so the machine will not re-open it
+            // this scope (018 FIX-1 / FR-003).
+            self.auto_expand.note_user_close(section);
         } else {
             self.inspector_open.insert(section);
+            // Manual open makes the section user-owned (survives retraction).
+            self.auto_expand.note_user_open(section);
         }
     }
 
@@ -1158,7 +1260,7 @@ impl RustFehApp {
 
         if Self::render_segment_detach_toolbar(
             ui,
-            "Folder, filter, sort, and list view mode",
+            "Folder, filter, and sort controls",
             "Detach window",
         ) {
             self.detached
@@ -1260,7 +1362,7 @@ impl RustFehApp {
             return;
         }
 
-        if Self::render_segment_detach_toolbar(ui, "Open selected image in feh", "Detach window") {
+        if Self::render_segment_detach_toolbar(ui, "Open in feh and image tools", "Detach window") {
             self.detached
                 .insert(InspectorSection::ImageActions, DetachedWindow::default());
         }
@@ -2535,9 +2637,14 @@ impl RustFehApp {
         }
     }
 
-    fn render_tools_action_buttons(&mut self, ui: &mut egui::Ui, pctx: &PanelContext) {
+    fn render_tools_action_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        pctx: &PanelContext,
+        section: ToolsSection,
+    ) {
         ui.separator();
-        match self.tools_panel.section {
+        match section {
             ToolsSection::Single => {
                 if ui
                     .add_enabled(pctx.image.is_some(), egui::Button::new("Apply"))
@@ -2562,22 +2669,42 @@ impl RustFehApp {
     ) {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new("Image Tools").strong());
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.tools_panel.section,
-                    ToolsSection::Single,
-                    "Single",
-                );
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Batch, "Batch");
-                ui.selectable_value(
-                    &mut self.tools_panel.section,
-                    ToolsSection::Rename,
-                    "Rename",
-                );
-                ui.selectable_value(&mut self.tools_panel.section, ToolsSection::Cache, "Cache");
-            });
-            ui.separator();
-            match self.tools_panel.section {
+            // 018 FIX-5: Batch / Rename / Cache act on the LIVE folder's filtered
+            // list (via compute_list_indices), NOT the pinned image, so a pinned
+            // detached window must not expose them (SC-006: pinned actions target
+            // the pinned image). Hide those tabs when pinned and force the Single
+            // tab, whose ops act on `pctx.image` (the pin) directly.
+            let section = if pctx.pinned {
+                ui.small("Folder-scoped tools follow the main window — unpin to use here.");
+                ui.separator();
+                ToolsSection::Single
+            } else {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.tools_panel.section,
+                        ToolsSection::Single,
+                        "Single",
+                    );
+                    ui.selectable_value(
+                        &mut self.tools_panel.section,
+                        ToolsSection::Batch,
+                        "Batch",
+                    );
+                    ui.selectable_value(
+                        &mut self.tools_panel.section,
+                        ToolsSection::Rename,
+                        "Rename",
+                    );
+                    ui.selectable_value(
+                        &mut self.tools_panel.section,
+                        ToolsSection::Cache,
+                        "Cache",
+                    );
+                });
+                ui.separator();
+                self.tools_panel.section
+            };
+            match section {
                 ToolsSection::Single | ToolsSection::Batch => {
                     self.render_tools_single_batch_section(ui, ctx, pctx);
                 }
@@ -2585,7 +2712,7 @@ impl RustFehApp {
                 ToolsSection::Cache => self.render_tools_cache_section(ui),
             }
             self.render_tools_job_status(ui);
-            self.render_tools_action_buttons(ui, pctx);
+            self.render_tools_action_buttons(ui, pctx, section);
         });
     }
 
@@ -2673,20 +2800,12 @@ impl RustFehApp {
     }
 
     fn render_inspector_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, time: f64) {
-        // Per-frame auto-expand, applied BEFORE zones render so it takes effect
-        // the same frame (018 Batch 1/2): scanning always surfaces Session
-        // status; no folder loaded always surfaces Browse. Because those
-        // sections now live inside the collapsed-by-default Zone D drawer, the
-        // drawer itself must also open, or the inserts have no visible effect.
-        if self.scanning {
-            self.inspector_open.insert(InspectorSection::SessionStatus);
-        }
-        if self.current_dir.is_none() {
-            self.inspector_open.insert(InspectorSection::Browse);
-        }
-        if self.scanning || self.current_dir.is_none() {
-            self.inspector_drawer_collapsed = false;
-        }
+        // Auto-expand is EDGE-TRIGGERED, not per-frame (018 FIX-1, FR-003): the
+        // rising/falling edges are wired at their event sites — scan start
+        // (`scan_directory`), scan complete (`apply_scan_result`), the
+        // no-folder ↔ folder-loaded transition (`sync_auto_expand_folder_edge`,
+        // called from `update`), and tool-missing detection
+        // (`mark_feh_unavailable`/`refresh_tool_caps`). Nothing to do here.
 
         // Stable base for the Zone D height clamp: the full inspector content
         // height, captured once before any zone consumes vertical space.
@@ -2712,6 +2831,9 @@ impl RustFehApp {
             };
             if ui.small_button(toggle_label).clicked() {
                 self.inspector_drawer_collapsed = !self.inspector_drawer_collapsed;
+                // The user now owns the drawer's open/closed state; a later
+                // retraction must not move it (018 FIX-1 / FR-003).
+                self.auto_expand.note_user_drawer_toggle();
             }
             ui.add(
                 egui::Label::new(
@@ -2955,7 +3077,7 @@ impl RustFehApp {
             "Activity log",
             "✅ Dependencies — all required tools OK",
             "Format discovery",
-            // Button / checkbox captions. All below the 280px floor today, so
+            // Button / checkbox captions. All below the 440px floor today, so
             // they never change the result; kept for completeness + robustness.
             // Being constants, they can never introduce jitter.
             "Choose folder",
@@ -2987,6 +3109,13 @@ impl RustFehApp {
             "Folder",
             "Filename",
             "Status",
+            // NOTE (018 FIX-11): the seven detach-toolbar descriptions and the
+            // "Install required tools above, then click Recheck." line are
+            // panel-rendered but intentionally NOT listed here. They render at
+            // `ui.small()` (smaller than the Button metric measured above) and
+            // their widest (~285px) sits well under the 440px floor, so they can
+            // never size the panel. This list is therefore ADVISORY below the
+            // floor: it does not need to enumerate every sub-floor caption.
         ];
 
         // Fixed horizontal chrome added around the widest label so it is never
@@ -2994,7 +3123,9 @@ impl RustFehApp {
         //   SidePanel frame inner margin (8 + 8; exact_width is "incl. margins") = 16
         //   CollapsingHeader indent gutter (spacing.indent = 18)                 = 18
         //   CollapsingHeader trailing button_padding.x (= 4)                     =  4
-        //   floating vertical scrollbar overlay (scroll bar_width = 10)          = 10
+        //   inner list/drawer ScrollArea bar allowance (scroll bar_width = 10)   = 10
+        // (018 FIX-11: post-Batch-2 the infinite OUTER panel ScrollArea is gone;
+        // the 10px now covers the Zone C list / Zone D drawer inner scrollbars.)
         const PANEL_CHROME: f32 = 48.0;
 
         let ppp = ctx.pixels_per_point();
@@ -3020,9 +3151,9 @@ impl RustFehApp {
             }
         };
 
-        // Clamp to [280, half-viewport] EVERY call (not cached) so width tracks
+        // Clamp to [440, half-viewport] EVERY call (not cached) so width tracks
         // live window resizes. The half-viewport cap is a HARD upper bound; when
-        // the window is so narrow the cap falls below 280, the cap wins — and
+        // the window is so narrow the cap falls below 440, the cap wins — and
         // floor == upper here avoids an f32::clamp(min > max) panic.
         let upper = Self::inspector_max_width(ctx);
         let floor = 440.0_f32.min(upper);
@@ -3174,13 +3305,21 @@ impl RustFehApp {
                         self.render_image_actions_pin_toggle(ui);
                         let pin = self.detached.get(&section).and_then(|w| w.pin.as_ref());
                         let pctx = self.panel_context(pin);
-                        let stale_pin = pctx.pinned
-                            && pctx.image.as_deref().map(|p| !p.exists()).unwrap_or(false);
+                        // 018 FIX-3/FIX-4: in-memory membership (not a per-frame
+                        // Path::exists() stat) is the pin-staleness signal. A pinned
+                        // path absent from the live filtered list (moved/deleted, or
+                        // a different folder is loaded) disables the actions with an
+                        // inline hint IN this window, so the pinned "Open in feh"
+                        // can no longer silently no-op against the main window.
+                        let stale_pin = match (pctx.pinned, pctx.image.as_deref()) {
+                            (true, Some(p)) => !self.pinned_path_in_filtered_list(p),
+                            _ => false,
+                        };
                         if stale_pin {
                             ui.colored_label(
                                 egui::Color32::RED,
                                 format!(
-                                    "Pinned image no longer exists: {}. Unpin or pin a different image.",
+                                    "Pinned image is not in the current folder/filter: {}. Unpin to follow the live selection, or load its folder.",
                                     pctx.image.as_deref().map(file_name_display).unwrap_or_default()
                                 ),
                             );
@@ -3297,7 +3436,10 @@ impl RustFehApp {
             .resizable(false)
             .exact_width(inspector_w)
             .show(ctx, |ui| {
-                ui.set_max_width(inspector_w);
+                // No set_max_width here (018 FIX-9): SidePanel::exact_width already
+                // fixes the content width; an extra set_max_width(inspector_w) is
+                // applied to the post-margin inner Ui and pushes content ~8px past
+                // the panel edge (egui 0.30 placer semantics).
                 let time = ctx.input(|i| i.time);
                 self.render_inspector_panel(ui, ctx, time);
             });
@@ -3408,13 +3550,32 @@ impl RustFehApp {
         full_h: f32,
     ) {
         let row_h = 18.0;
-        let header_h = row_h + ui.spacing().item_spacing.y;
+        let item_spacing_y = ui.spacing().item_spacing.y;
+        // Only FLAT mode renders a "Folder / Filename / Status" column-header row;
+        // TREE mode has no header, so subtracting it there is phantom reservation
+        // that shrinks the list (018 FIX-8).
+        let flat_header_h = row_h + item_spacing_y;
+        let header_h = if self.list_view_mode == ListViewMode::FlatList {
+            flat_header_h
+        } else {
+            0.0
+        };
+        // The list sits inside an `egui::Frame::group` with `inner_margin(4.0)`
+        // (8px top+bottom) followed by one trailing `item_spacing`; reserve both
+        // so tall lists never overflow the inspector (018 FIX-8).
+        let group_chrome = 4.0 * 2.0 + item_spacing_y;
         let drawer_reserved = self.sections_drawer_reserved_height(full_h);
         let total_w = ui.available_width();
+        let folder_col_w = total_w * 0.35;
+        let status_col_w = total_w * 0.25;
         let metrics = ImageListMetrics {
-            list_height: (ui.available_height() - header_h - drawer_reserved).max(row_h * 4.0),
-            folder_col_w: total_w * 0.35,
-            status_col_w: total_w * 0.25,
+            list_height: (ui.available_height() - header_h - group_chrome - drawer_reserved)
+                .max(row_h * 4.0),
+            folder_col_w,
+            // Filename column takes the middle band; a fixed width lets the
+            // filename truncate instead of clipping the Status column (018 FIX-10).
+            name_col_w: (total_w - folder_col_w - status_col_w - item_spacing_y * 2.0).max(0.0),
+            status_col_w,
             row_h,
         };
         egui::Frame::group(ui.style())
@@ -3433,19 +3594,14 @@ impl RustFehApp {
     /// inspector content height (captured once, before any zone renders) so the
     /// drawer size is stable frame-to-frame regardless of Zone A/B content.
     fn sections_drawer_body_height(full_h: f32) -> f32 {
-        (full_h * 0.4).clamp(180.0, 360.0)
+        sections_drawer_body_height(full_h)
     }
 
     /// Total vertical space Zone D consumes, which Zone C reserves before it
-    /// renders. Collapsed: just the ~24px toggle row. Expanded: toggle row plus
-    /// the bounded scroll body.
+    /// renders. Collapsed: just the toggle row. Expanded: toggle row plus the
+    /// bounded scroll body. Pure math lives in `ui_logic` (unit-tested, 018 FIX-8).
     fn sections_drawer_reserved_height(&self, full_h: f32) -> f32 {
-        let toggle_row_h = 24.0;
-        if self.inspector_drawer_collapsed {
-            toggle_row_h
-        } else {
-            toggle_row_h + Self::sections_drawer_body_height(full_h)
-        }
+        sections_drawer_reserved_height(full_h, self.inspector_drawer_collapsed)
     }
 
     fn render_scan_inventory_banner(&self, ui: &mut egui::Ui, list_root: Option<&Path>) {
@@ -3498,9 +3654,19 @@ impl RustFehApp {
         let is_selected = self.selected.as_ref() == Some(&path);
         ui.horizontal(|ui| {
             ui.allocate_ui(egui::vec2(metrics.folder_col_w, metrics.row_h), |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                 ui.label(egui::RichText::new(folder).weak());
             });
-            let response = ui.selectable_label(is_selected, &name);
+            // Fixed-width, truncating filename column with a full-path hover
+            // (same pattern as the breadcrumb) so long names never clip the
+            // Status column (018 FIX-10).
+            let response = ui
+                .allocate_ui(egui::vec2(metrics.name_col_w, metrics.row_h), |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    ui.selectable_label(is_selected, &name)
+                })
+                .inner
+                .on_hover_text(path.display().to_string());
             self.render_image_context_menu(&response, &path, decodable);
             self.handle_image_row_click(&response, path);
             ui.allocate_ui(egui::vec2(metrics.status_col_w, metrics.row_h), |ui| {
@@ -3543,8 +3709,12 @@ impl RustFehApp {
     }
 
     /// One-shot forced scroll offset for a pending round-trip landing (feature
-    /// 016, US2 AS1: "the list scrolls to it"); consumes `pending_scroll_path`
-    /// so it only forces the position once, not every frame. Peek-then-take (018 F5): only consumed once the target row is actually found in `filtered`, so a frame where the list hasn't caught up yet (e.g. mid cross-folder round-trip landing) doesn't lose the pending scroll.
+    /// 016, US2 AS1: "the list scrolls to it"). Peek-then-take: `pending_scroll_path`
+    /// is consumed ONLY once the target row is actually found in `filtered`, so a
+    /// frame where the list has not caught up yet (e.g. mid cross-folder round-trip
+    /// landing, before the rescan lands) does not lose the pending scroll. The
+    /// pending path is otherwise cleared by `scan_directory`'s reset and by tree
+    /// mode (which cannot scroll-to-path), bounding its lifetime (018 FIX-6).
     fn pending_flat_scroll_offset(
         &mut self,
         filtered: &[usize],
@@ -3654,6 +3824,13 @@ impl RustFehApp {
                 expanded: self.tree_expanded_paths.clone(),
             });
         }
+
+        // Tree mode does not implement scroll-to-path, so consume-or-clear any
+        // pending landing scroll here (018 FIX-6): otherwise a scroll armed while
+        // in tree mode would linger and fire much later when the user switches to
+        // flat mode. Clearing is the "consume" — the tree simply has nowhere to
+        // scroll to.
+        self.pending_scroll_path = None;
 
         // Move rows out so the show_rows closure can borrow &mut self freely,
         // then move them back afterward. Avoids a per-frame Vec<TreeRow> clone.
@@ -4121,6 +4298,9 @@ impl App for RustFehApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.apply_startup_window_prefs(ctx);
         self.maybe_load_start_folder();
+        // Edge-detect no-folder ↔ folder-loaded AFTER the start-folder auto-load
+        // has settled `current_dir` (018 FIX-1).
+        self.sync_auto_expand_folder_edge();
         self.poll_scan_complete(ctx);
         self.poll_subfolders(ctx);
         self.poll_tools_job(ctx);
@@ -4191,12 +4371,16 @@ impl RustFehApp {
                 non_image_skipped,
                 magick_truncated,
             } if generation == self.scan_generation => {
-                let inventory =
-                    ScanInventory::from_entries(&entries, non_image_skipped, magick_truncated);
                 // Merge the background converted snapshot BY PATH instead of a wholesale
                 // replace, so user mutations to self.images (rename/move/processed-add) that
                 // raced this async message are not silently discarded (018 F1).
                 merge_converted_statuses(&mut self.images, &entries);
+                // Rebuild the inventory from the LIVE list AFTER the merge, not the stale
+                // scan-time snapshot (018 FIX-2): otherwise a move/tools-op that raced this
+                // message reverts the tree/inventory counts and breaks SC-005. The scan-level
+                // metadata (skipped / truncated) still comes from the scan message.
+                let inventory =
+                    ScanInventory::from_entries(&self.images, non_image_skipped, magick_truncated);
                 // cache invariant: bump on every self.images mutation
                 self.images_revision = self.images_revision.wrapping_add(1);
                 self.scan_inventory = Some(inventory);
@@ -4286,8 +4470,23 @@ impl RustFehApp {
         self.selected = None;
         self.images.clear();
         self.pending_select_path = None;
+        // Landing-scroll is re-armed AFTER navigate_to_folder by the round-trip
+        // path (stage_selection_from_round_trip); clearing it here in the scan
+        // reset stops a stale pending scroll from an earlier folder outliving the
+        // rescan (018 FIX-6).
+        self.pending_scroll_path = None;
         // cache invariant: bump on every self.images mutation
         self.images_revision = self.images_revision.wrapping_add(1);
+        // Scan start = rising edge for Session status (018 FIX-1): a new scan
+        // attempt is a fresh scope (lift any prior user-close latch), then open
+        // Session status + expand the drawer once.
+        self.auto_expand
+            .begin_scope(InspectorSection::SessionStatus);
+        self.auto_expand.request_open(
+            InspectorSection::SessionStatus,
+            &mut self.inspector_open,
+            &mut self.inspector_drawer_collapsed,
+        );
         self.selected_tree_folder = None;
         self.scan_inventory = None;
         self.tree_expanded_paths = default_tree_expanded();
@@ -4421,6 +4620,16 @@ impl RustFehApp {
             );
             self.log(format!("Auto-selected first image: {}", p.display()));
         }
+
+        // Scan complete = falling edge for Session status (018 FIX-1): retract it
+        // if the machine still owns it (a user who opened it stays), returning the
+        // drawer to collapsed when nothing else is open (SC-001 / US1-AS2). Only
+        // reached for the current generation's Complete message.
+        self.auto_expand.retract(
+            InspectorSection::SessionStatus,
+            &mut self.inspector_open,
+            &mut self.inspector_drawer_collapsed,
+        );
     }
 
     /// Open the current filtered list in a round-trip feh viewer (feature 016,
@@ -4472,6 +4681,18 @@ impl RustFehApp {
     fn open_in_feh_pinned(&mut self, path: &Path) {
         if !self.feh_available {
             self.status = feh_missing_status();
+            return;
+        }
+        // Defensive pinned-case gate (018 FIX-3): the detached window already
+        // hides the action when the pin is not in the live list, but check here
+        // too so a stale pin can never fall through to open_in_feh's generic
+        // "not in the filtered filelist" status (which surfaces in the MAIN
+        // window and reads as a mystery no-op). Reword for the pinned case.
+        if !self.pinned_path_in_filtered_list(path) {
+            self.status = format!(
+                "Pinned image is not in the current folder/filter: {} — unpin or load its folder",
+                file_name_display(path)
+            );
             return;
         }
         self.open_in_feh(path);
