@@ -398,8 +398,8 @@ fn var10_multi_feh_filelists_both_folders() {
     let Some((folder_a, folder_b)) = skip_unless_fixtures() else {
         return;
     };
-    let mut combined = scan_folder(&folder_a);
-    combined.extend(scan_folder(&folder_b));
+    scan_folder(&folder_a);
+    scan_folder(&folder_b);
 
     for (id, folder) in [("mf-a", &folder_a), ("mf-b", &folder_b)] {
         let entry = rust_feh::types::FehLaunchEntry {
@@ -408,9 +408,9 @@ fn var10_multi_feh_filelists_both_folders() {
             folder_path: Some(folder.clone()),
             created_at: 1,
         };
-        let state = entry_is_launchable(&entry, &combined, true);
+        let state = entry_is_launchable(&entry, true);
         assert!(state.launchable, "{id}: {}", state.status);
-        let list = build_entry_filelist(&entry, &combined);
+        let list = build_entry_filelist(&entry);
         assert!(!list.is_empty());
         let out = test_dir(folder, "10-multi-feh-filelist");
         fs::create_dir_all(&out).unwrap();

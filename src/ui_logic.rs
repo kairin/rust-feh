@@ -6,7 +6,7 @@ use crate::types::{
     FehLaunchEntry, FehLaunchList, FileStatus, ImageEntry, ListViewMode, OutputPolicy,
     ProcessedResult, ScanInventory, SortMode, WindowPreferences, WindowSizePreset,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -380,9 +380,9 @@ pub fn action_prefs_path() -> PathBuf {
         .join("action-prefs.json")
 }
 
-/// Persist action preferences using a temp-file + rename write.
-pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
-    let path = action_prefs_path();
+/// Persist action preferences to an explicit path using a temp-file + rename write.
+/// Real (non-test) callers use `save_action_prefs`, a thin wrapper over this.
+pub fn save_action_prefs_to(path: &Path, prefs: &ActionPrefs) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Invalid action-prefs path: {}", path.display()));
     };
@@ -397,17 +397,22 @@ pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
         .map_err(|e| format!("Failed to serialize action preferences: {e}"))?;
     std::fs::write(&temp, data)
         .map_err(|e| format!("Failed to write action preferences {}: {e}", temp.display()))?;
-    std::fs::rename(&temp, &path).map_err(|e| {
+    std::fs::rename(&temp, path).map_err(|e| {
         let _ = std::fs::remove_file(&temp);
         format!("Failed to save action preferences {}: {e}", path.display())
     })?;
     Ok(())
 }
 
-/// Load action preferences; missing or corrupt files recover to defaults.
-pub fn load_action_prefs() -> ActionPrefs {
-    let path = action_prefs_path();
-    let Ok(data) = std::fs::read(&path) else {
+/// Persist action preferences using a temp-file + rename write.
+pub fn save_action_prefs(prefs: &ActionPrefs) -> Result<(), String> {
+    save_action_prefs_to(&action_prefs_path(), prefs)
+}
+
+/// Load action preferences from an explicit path; missing or corrupt files recover to
+/// defaults. Real (non-test) callers use `load_action_prefs`, a thin wrapper over this.
+pub fn load_action_prefs_from(path: &Path) -> ActionPrefs {
+    let Ok(data) = std::fs::read(path) else {
         return ActionPrefs::default();
     };
     match serde_json::from_slice(&data) {
@@ -420,6 +425,11 @@ pub fn load_action_prefs() -> ActionPrefs {
             ActionPrefs::default()
         }
     }
+}
+
+/// Load action preferences; missing or corrupt files recover to defaults.
+pub fn load_action_prefs() -> ActionPrefs {
+    load_action_prefs_from(&action_prefs_path())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,68 +466,43 @@ pub fn copy_image_to_clipboard(path: &Path) -> Result<String, String> {
     ))
 }
 
-fn entry_folder_images<'a>(entry: &FehLaunchEntry, images: &'a [ImageEntry]) -> Vec<&'a Path> {
+/// Build deterministic feh filelist paths for one launch entry by scanning its
+/// assigned folder directly (decoupled from the app's current scan list —
+/// feature 017 drill-down: an entry's folder need not be the active folder).
+pub fn build_entry_filelist(entry: &FehLaunchEntry) -> Vec<PathBuf> {
     let Some(folder) = entry.folder_path.as_deref() else {
         return Vec::new();
     };
-    images
-        .iter()
-        .filter(|image| image.path.parent().is_some_and(|p| p == folder))
-        .map(|image| image.path.as_path())
-        .collect()
-}
-
-/// Build deterministic feh filelist paths for one launch entry from current scanned images.
-pub fn build_entry_filelist(entry: &FehLaunchEntry, images: &[ImageEntry]) -> Vec<PathBuf> {
-    entry_folder_images(entry, images)
+    crate::scanner::scan_images(folder, false, false)
+        .entries
         .into_iter()
-        .map(Path::to_path_buf)
+        .map(|e| e.path)
         .collect()
 }
 
-fn entry_launch_block_reason(entry: &FehLaunchEntry) -> Option<&'static str> {
-    let folder = entry.folder_path.as_deref()?;
-    if folder.is_dir() {
-        None
-    } else {
-        Some("Folder not found")
-    }
-}
-
-/// Explain whether a configured launch entry can be launched now.
-pub fn entry_is_launchable(
-    entry: &FehLaunchEntry,
-    images: &[ImageEntry],
-    feh_available: bool,
-) -> EntryLaunchState {
+/// Explain whether a configured launch entry can be launched now. No disk walk
+/// (runs every frame) — only checks folder assignment/existence; emptiness is
+/// detected at launch time (`build_entry_filelist` + launch-time guard).
+pub fn entry_is_launchable(entry: &FehLaunchEntry, feh_available: bool) -> EntryLaunchState {
     if !feh_available {
         return EntryLaunchState {
             launchable: false,
             status: feh_not_installed_launch_status(),
         };
     }
-    if entry.folder_path.is_none() {
-        return EntryLaunchState {
+    match entry.folder_path.as_deref() {
+        None => EntryLaunchState {
             launchable: false,
             status: "Select a folder".to_string(),
-        };
-    }
-    if let Some(reason) = entry_launch_block_reason(entry) {
-        return EntryLaunchState {
+        },
+        Some(f) if !f.is_dir() => EntryLaunchState {
             launchable: false,
-            status: reason.to_string(),
-        };
-    }
-    let count = entry_folder_images(entry, images).len();
-    if count == 0 {
-        return EntryLaunchState {
-            launchable: false,
-            status: "No images".to_string(),
-        };
-    }
-    EntryLaunchState {
-        launchable: true,
-        status: format!("{count} images"),
+            status: "Folder not found".to_string(),
+        },
+        Some(_) => EntryLaunchState {
+            launchable: true,
+            status: "Ready".to_string(),
+        },
     }
 }
 
@@ -653,7 +638,7 @@ pub fn list_indices(
     sort: SortMode,
 ) -> Vec<usize> {
     let mut indices = filter_indices(images, root, search);
-    indices.sort_by_key(|&a| sort_key(images, a, sort, root));
+    indices.sort_by_cached_key(|&a| sort_key(images, a, sort, root));
     indices
 }
 
@@ -674,6 +659,15 @@ pub fn file_status_label(status: FileStatus) -> &'static str {
         FileStatus::MagickDetected => "magick · awaiting convert",
         FileStatus::Converted => "converted",
     }
+}
+
+/// Whether this app's own Rust decode/process pipeline can open and process a
+/// listed file. `MagickDetected` rows were only magic-byte-sniffed by ImageMagick
+/// and not yet converted into a format the `image` crate understands ("awaiting
+/// convert"), so they are not decodable/processable here — only `NativeListed`
+/// and `Converted` are. Mirrors the stage's `StageState::Ready` gate for list rows.
+pub fn file_status_decodable(status: FileStatus) -> bool {
+    matches!(status, FileStatus::NativeListed | FileStatus::Converted)
 }
 
 pub fn tree_file_glyph(status: FileStatus) -> &'static str {
@@ -798,6 +792,26 @@ fn add_entry_to_tree(root: &mut FolderTreeNode, folder: &str, idx: usize, status
     bump_folder_counts(root, status);
     let leaf = descend_folder(root, folder, status);
     leaf.file_indices.push(idx);
+}
+
+/// Non-recursive listing of immediate subdirectories of `dir`, sorted by path
+/// (feature 017 drill-down navigation). Missing/unreadable dir -> empty Vec,
+/// never panics.
+pub fn list_subfolders(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| {
+            e.file_type()
+                .map(|ft| ft.is_dir())
+                .unwrap_or_else(|_| e.path().is_dir())
+        })
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    out
 }
 
 /// Build folder hierarchy from filtered/sorted entry indices (FR-009).
@@ -1008,6 +1022,44 @@ pub fn add_or_update_asset_in_inventory(
     ));
 }
 
+/// Merge the background converted-detection snapshot into the live `images` list BY PATH,
+/// updating only each matched entry's `status` (018 F1 data-integrity fix).
+///
+/// The converted pass runs off-thread on a *clone* of the scan's entries and its
+/// `ScanMsg::Converted` result can land after the user has already mutated `images` — an
+/// in-place rename (`e.path` changed), a move (`retain` removal), or a processed-add (a
+/// pushed derived-output entry). Wholesale-replacing `images` with the snapshot silently
+/// discards those mutations, so we merge instead:
+///   - path present in BOTH: overwrite ONLY `status` (never `size_bytes` / `asset_status`).
+///     The snapshot is a same-generation refinement of the very entries `images` was built
+///     from and can only upgrade a row to `Converted`, never downgrade it.
+///   - path only in `images` (a renamed-away new path, or a processed-add output the scan
+///     never saw): left untouched.
+///   - path only in `converted_snapshot` (a moved-/renamed-away old path): NOT resurrected.
+///
+/// Takes `&mut [ImageEntry]` (not `&mut Vec`) so the required "entry count never changes"
+/// invariant holds by construction — a mutable slice cannot push or remove.
+pub fn merge_converted_statuses(images: &mut [ImageEntry], converted_snapshot: &[ImageEntry]) {
+    let status_by_path: HashMap<&Path, FileStatus> = converted_snapshot
+        .iter()
+        .map(|e| (e.path.as_path(), e.status))
+        .collect();
+    for entry in images.iter_mut() {
+        if let Some(&status) = status_by_path.get(entry.path.as_path()) {
+            // Upgrade-only (018 FIX-11): the converted pass only ever PROMOTES a
+            // row to `Converted`; it never produces a downgrade. Applying the
+            // snapshot status unconditionally could still downgrade a row a live
+            // mutation already advanced to `Converted` after the snapshot was
+            // cloned (e.g. an in-app tool op) if that path's snapshot copy was
+            // captured pre-conversion. Guard the write to a genuine upgrade so a
+            // stale snapshot can never regress a live `Converted` row.
+            if status == FileStatus::Converted {
+                entry.status = FileStatus::Converted;
+            }
+        }
+    }
+}
+
 /// Root tree folder listed count should match inventory native_listed (SC-005).
 pub fn tree_root_listed_matches_inventory(
     tree: &FolderTreeNode,
@@ -1031,6 +1083,25 @@ pub fn finalize_scan_entries_fast(
 pub fn apply_converted_detection(entries: &mut [ImageEntry]) -> usize {
     let mut n = 0usize;
     for entry in entries.iter_mut() {
+        if detect_converted_status(&entry.path) {
+            entry.status = FileStatus::Converted;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Cancellable variant of `apply_converted_detection`: checks `cancel` before each stat, so a
+/// superseded scan's converted-sibling pass stops promptly instead of stat-storming every file.
+pub fn apply_converted_detection_cancellable(
+    entries: &mut [ImageEntry],
+    cancel: &Arc<AtomicBool>,
+) -> usize {
+    let mut n = 0usize;
+    for entry in entries.iter_mut() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         if detect_converted_status(&entry.path) {
             entry.status = FileStatus::Converted;
             n += 1;
@@ -1540,6 +1611,236 @@ pub fn stage_decode_bounds(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
     (new_w, new_h)
 }
 
+/// Inspector section identifiers (018 Batch 1), in the order they render in
+/// `render_inspector_panel`. Replaces 7 discrete open-bool fields with a
+/// single `HashSet<InspectorSection>` fold-state set on `RustFehApp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InspectorSection {
+    Browse,
+    ImageActions,
+    FehInstances,
+    SessionStatus,
+    ActivityLog,
+    Dependencies,
+    FormatDiscovery,
+}
+
+impl InspectorSection {
+    /// All sections, in render order. Iterate this (never a `HashMap`/`HashSet`)
+    /// whenever section ORDER matters (e.g. detached-window spawn order in a
+    /// later batch) — set iteration order is not guaranteed.
+    pub const ALL: [InspectorSection; 7] = [
+        InspectorSection::Browse,
+        InspectorSection::ImageActions,
+        InspectorSection::FehInstances,
+        InspectorSection::SessionStatus,
+        InspectorSection::ActivityLog,
+        InspectorSection::Dependencies,
+        InspectorSection::FormatDiscovery,
+    ];
+}
+
+/// Initial fold-state at app startup: every section starts COLLAPSED except the
+/// two conditional-open ones — Dependencies when a required tool is missing,
+/// FormatDiscovery when the format-routing tools panel is not fully OK.
+pub fn initial_open_sections(
+    has_missing_required: bool,
+    tools_panel_ok: bool,
+) -> HashSet<InspectorSection> {
+    let mut open = HashSet::new();
+    if has_missing_required {
+        open.insert(InspectorSection::Dependencies);
+    }
+    if !tools_panel_ok {
+        open.insert(InspectorSection::FormatDiscovery);
+    }
+    open
+}
+
+/// Height of the Zone D drawer's inner scroll body when expanded (018 Batch 2;
+/// pure math extracted for FIX-8 unit testing). 40% of the full inspector
+/// content height, clamped so the drawer never starves Zone C nor grows
+/// unbounded.
+pub fn sections_drawer_body_height(full_h: f32) -> f32 {
+    (full_h * 0.4).clamp(180.0, 360.0)
+}
+
+/// The Zone D meta-drawer toggle row height (the "▶ Details" line).
+pub const DRAWER_TOGGLE_ROW_H: f32 = 24.0;
+
+/// Total vertical space Zone D reserves from Zone C (018 Batch 2; pure math
+/// extracted for FIX-8 unit testing). Collapsed = just the toggle row; expanded
+/// = toggle row plus the bounded scroll body.
+pub fn sections_drawer_reserved_height(full_h: f32, collapsed: bool) -> f32 {
+    if collapsed {
+        DRAWER_TOGGLE_ROW_H
+    } else {
+        DRAWER_TOGGLE_ROW_H + sections_drawer_body_height(full_h)
+    }
+}
+
+/// Edge-triggered auto-expand policy for the inspector fold state (018 FIX-1,
+/// FR-003). Pure and egui-free so the whole "rising edge opens once / falling
+/// edge retracts / user-close latch" contract is unit-testable in isolation.
+///
+/// The three triggers (scan active → Session status, no folder → Browse,
+/// missing tool → Dependencies) are each an independent SCOPE. Within a scope
+/// the machine opens the target section ONCE on the rising edge and retracts it
+/// on the falling edge; a manual user close latches suppression so the machine
+/// does not fight the user for the rest of that scope; a manual user open makes
+/// the section user-owned so retraction leaves it in place. The shared Zone D
+/// drawer is reference-counted through `auto_open`: it re-collapses only when the
+/// machine no longer keeps any section open AND the user has not taken the drawer
+/// over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutoExpandState {
+    /// Sections the machine opened and still owns (the only retraction targets).
+    pub auto_open: HashSet<InspectorSection>,
+    /// Sections the user manually closed during the current scope; the machine
+    /// will not re-open them until `begin_scope` lifts the latch.
+    pub suppressed: HashSet<InspectorSection>,
+    /// True when the machine un-collapsed the drawer and the user has not toggled
+    /// it since — lets the last retraction re-collapse it (SC-001 / US1-AS2).
+    pub drawer_auto_opened: bool,
+}
+
+impl AutoExpandState {
+    /// Seed machine ownership from the startup fold set (`initial_open_sections`)
+    /// so startup auto-opens retract through the same mechanism. The drawer is
+    /// NOT claimed here (startup keeps it collapsed — FR-003 "startup semantics
+    /// unchanged").
+    pub fn seeded(initial_open: &HashSet<InspectorSection>) -> Self {
+        AutoExpandState {
+            auto_open: initial_open.clone(),
+            suppressed: HashSet::new(),
+            drawer_auto_opened: false,
+        }
+    }
+
+    /// A new trigger scope for `section` begins (new scan attempt, new no-folder
+    /// episode, or fresh tool-missing detection): the previous scope's user-close
+    /// suppression no longer applies.
+    pub fn begin_scope(&mut self, section: InspectorSection) {
+        self.suppressed.remove(&section);
+    }
+
+    /// Rising-edge request: the machine wants `section` open. No-op if the user
+    /// suppressed it this scope. Claims machine ownership of any section it newly
+    /// opens, and un-collapses the drawer for an active trigger (US1-AS3
+    /// "expanding the drawer"), recording drawer ownership only when it actually
+    /// moves the drawer.
+    pub fn request_open(
+        &mut self,
+        section: InspectorSection,
+        open: &mut HashSet<InspectorSection>,
+        drawer_collapsed: &mut bool,
+    ) {
+        if self.suppressed.contains(&section) {
+            return;
+        }
+        if open.insert(section) {
+            self.auto_open.insert(section);
+        }
+        if *drawer_collapsed {
+            *drawer_collapsed = false;
+            self.drawer_auto_opened = true;
+        }
+    }
+
+    /// Falling-edge retraction: close `section` only if the machine still owns it
+    /// (a user-opened section is preserved). When no machine-owned section remains
+    /// open, release drawer ownership; if the machine owned the drawer and nothing
+    /// else is open, re-collapse it.
+    pub fn retract(
+        &mut self,
+        section: InspectorSection,
+        open: &mut HashSet<InspectorSection>,
+        drawer_collapsed: &mut bool,
+    ) {
+        self.suppressed.remove(&section);
+        if self.auto_open.remove(&section) {
+            open.remove(&section);
+        }
+        if self.auto_open.is_empty() {
+            if self.drawer_auto_opened && open.is_empty() {
+                *drawer_collapsed = true;
+            }
+            self.drawer_auto_opened = false;
+        }
+    }
+
+    /// The user manually closed `section`: drop machine ownership and latch
+    /// suppression so the machine will not re-open it this scope (FR-003).
+    pub fn note_user_close(&mut self, section: InspectorSection) {
+        self.auto_open.remove(&section);
+        self.suppressed.insert(section);
+    }
+
+    /// The user manually opened `section`: it becomes user-owned (removed from
+    /// machine ownership and un-suppressed), so a later retraction leaves it open.
+    pub fn note_user_open(&mut self, section: InspectorSection) {
+        self.auto_open.remove(&section);
+        self.suppressed.remove(&section);
+    }
+
+    /// The user toggled the drawer itself: they now own its open/closed state, so
+    /// a later retraction must not move it.
+    pub fn note_user_drawer_toggle(&mut self) {
+        self.drawer_auto_opened = false;
+    }
+}
+
+/// A pinnable target for a detached inspector panel (018 decision 4). Only one
+/// variant today (a single pinned image); the enum leaves room for a future
+/// folder pin without changing `DetachedWindow`/`PanelContext` call sites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelPin {
+    Image(PathBuf),
+}
+
+/// State for one detached (floating) inspector-section window: whether it is
+/// pinned to a specific target rather than following the live selection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DetachedWindow {
+    pub pin: Option<PanelPin>,
+}
+
+/// The resolved (image, folder) an inspector body should act on: either the
+/// live selection/current folder, or a pinned target when `pinned` is true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelContext {
+    pub image: Option<PathBuf>,
+    pub folder: Option<PathBuf>,
+    pub pinned: bool,
+}
+
+impl PanelContext {
+    /// Resolve a panel's acting context: a `PanelPin::Image` pin wins outright
+    /// (its parent directory becomes the folder); otherwise fall back to the
+    /// live selection/current folder. Pure — callers own cloning `self.selected`
+    /// / `self.current_dir` BEFORE calling into a body that needs `&mut self`
+    /// (collect-then-act), per the existing pattern at the round-trip landing
+    /// call site.
+    pub fn resolve(
+        pin: Option<&PanelPin>,
+        live_image: Option<&Path>,
+        live_folder: Option<&Path>,
+    ) -> PanelContext {
+        match pin {
+            Some(PanelPin::Image(path)) => PanelContext {
+                folder: path.parent().map(Path::to_path_buf),
+                image: Some(path.clone()),
+                pinned: true,
+            },
+            None => PanelContext {
+                image: live_image.map(Path::to_path_buf),
+                folder: live_folder.map(Path::to_path_buf),
+                pinned: false,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1557,10 +1858,145 @@ mod tests {
         ImageEntry::new(PathBuf::from(path))
     }
 
-    /// `action_prefs_path()` resolves to one fixed real path (`~/.config/rust-feh/
-    /// action-prefs.json`); the three `action_prefs_*` tests below read/write it
-    /// directly and must not interleave under cargo's parallel test threads.
-    static ACTION_PREFS_TEST_LOCK: Mutex<()> = Mutex::new(());
+    // --- merge_converted_statuses (018 F1) ---
+
+    fn entry_full(
+        path: &str,
+        size_bytes: Option<u64>,
+        status: FileStatus,
+        asset_status: AssetStatus,
+    ) -> ImageEntry {
+        ImageEntry {
+            path: PathBuf::from(path),
+            size_bytes,
+            status,
+            asset_status,
+        }
+    }
+
+    /// (a) An entry present only in `images` (no matching snapshot path) is preserved
+    /// untouched — covers the rename-away new-path and processed-add cases.
+    #[test]
+    fn merge_converted_preserves_unmatched_images_entry() {
+        let mut images = vec![
+            entry_full(
+                "/d/a.png",
+                None,
+                FileStatus::NativeListed,
+                AssetStatus::Regular,
+            ),
+            // processed-add / renamed-away: path the snapshot never carried
+            entry_full(
+                "/d/derived.png",
+                Some(10),
+                FileStatus::NativeListed,
+                AssetStatus::Processed,
+            ),
+        ];
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        let derived = &images[1];
+        assert_eq!(derived.path, PathBuf::from("/d/derived.png"));
+        assert_eq!(derived.status, FileStatus::NativeListed);
+        assert_eq!(derived.asset_status, AssetStatus::Processed);
+        assert_eq!(derived.size_bytes, Some(10));
+    }
+
+    /// (b) A path present in both flips its `status` to the snapshot's status.
+    #[test]
+    fn merge_converted_flips_matched_status() {
+        let mut images = vec![entry("/d/a.png")]; // NativeListed
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images[0].status, FileStatus::Converted);
+    }
+
+    /// (c) Count-preserving: `images.len()` unchanged and no snapshot-only path leaks in.
+    #[test]
+    fn merge_converted_is_count_preserving_no_leak() {
+        let mut images = vec![
+            entry("/d/a.png"),              // matched
+            entry("/d/only_in_images.png"), // images-only
+        ];
+        let snapshot = vec![
+            entry_full(
+                "/d/a.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
+            entry_full(
+                "/d/only_in_snapshot.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
+        ];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images.len(), 2);
+        assert!(!images
+            .iter()
+            .any(|e| e.path == PathBuf::from("/d/only_in_snapshot.png")));
+    }
+
+    /// (d) A path present only in the snapshot (a moved-/renamed-away file) is NOT
+    /// resurrected into `images`.
+    #[test]
+    fn merge_converted_does_not_resurrect_snapshot_only_path() {
+        let mut images = vec![entry("/d/a.png")];
+        let snapshot = vec![
+            entry_full(
+                "/d/a.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
+            entry_full(
+                "/d/moved_away.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
+        ];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images.len(), 1);
+        assert!(!images
+            .iter()
+            .any(|e| e.path == PathBuf::from("/d/moved_away.png")));
+    }
+
+    /// (e) On a matched entry, only `status` changes — `asset_status` and `size_bytes` are
+    /// preserved even though the snapshot carries different values for them.
+    #[test]
+    fn merge_converted_preserves_asset_status_and_size_on_match() {
+        let mut images = vec![entry_full(
+            "/d/a.png",
+            Some(4096),
+            FileStatus::NativeListed,
+            AssetStatus::Processed,
+        )];
+        // snapshot deliberately carries a different size/asset_status to prove they are ignored
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images[0].status, FileStatus::Converted);
+        assert_eq!(images[0].size_bytes, Some(4096));
+        assert_eq!(images[0].asset_status, AssetStatus::Processed);
+    }
 
     /// `feh_filelist_temp_path()` is a single pid-scoped path shared by every test
     /// in this process; the two tests below both write/read it directly and must
@@ -1773,6 +2209,24 @@ mod tests {
     }
 
     #[test]
+    fn apply_converted_detection_cancellable_exits_early_when_precancel() {
+        let dir = std::env::temp_dir().join("rust-feh-cancellable-converted-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sunset_processed.jpg");
+        std::fs::write(&path, b"x").unwrap();
+
+        let mut entries = vec![entry(path.to_str().unwrap())];
+        let cancel = Arc::new(AtomicBool::new(true));
+        let n = apply_converted_detection_cancellable(&mut entries, &cancel);
+
+        assert_eq!(n, 0);
+        assert_eq!(entries[0].status, FileStatus::NativeListed);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn finalize_scan_entries_updates_inventory() {
         let dir = std::env::temp_dir().join("rust-feh-finalize-test");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1806,6 +2260,13 @@ mod tests {
             "magick · awaiting convert"
         );
         assert_eq!(file_status_label(FileStatus::Converted), "converted");
+    }
+
+    #[test]
+    fn file_status_decodable_matches_native_and_converted_only() {
+        assert!(file_status_decodable(FileStatus::NativeListed));
+        assert!(file_status_decodable(FileStatus::Converted));
+        assert!(!file_status_decodable(FileStatus::MagickDetected));
     }
 
     #[test]
@@ -1995,86 +2456,44 @@ mod tests {
 
     #[test]
     fn action_prefs_round_trip_save_and_load() {
-        let _guard = ACTION_PREFS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let path = action_prefs_path();
-        // Save original if it exists
-        let original_backup = std::fs::read(&path).ok();
-
-        // Remove the file if it exists to start fresh
+        let path = test_scratch_dir("action-prefs-round-trip").join("action-prefs.json");
         let _ = std::fs::remove_file(&path);
 
-        // Create and save test prefs
         let test_prefs = ActionPrefs {
             version: 1,
             last_destination: Some(PathBuf::from("/tmp/some/dir")),
         };
 
-        save_action_prefs(&test_prefs).expect("save should succeed");
+        save_action_prefs_to(&path, &test_prefs).expect("save should succeed");
 
-        // Load it back
-        let loaded = load_action_prefs();
+        let loaded = load_action_prefs_from(&path);
 
-        // Verify round-trip equality
         assert_eq!(loaded, test_prefs);
 
-        // Restore original or clean up
         let _ = std::fs::remove_file(&path);
-        if let Some(backup_data) = original_backup {
-            let _ = std::fs::write(&path, backup_data);
-        }
     }
 
     #[test]
     fn action_prefs_missing_file_returns_default() {
-        let _guard = ACTION_PREFS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let path = action_prefs_path();
-        // Save original if it exists
-        let original_backup = std::fs::read(&path).ok();
-
-        // Remove the file if it exists so path is absent
+        let path = test_scratch_dir("action-prefs-missing").join("action-prefs.json");
         let _ = std::fs::remove_file(&path);
 
-        // Load should return default
-        let loaded = load_action_prefs();
+        let loaded = load_action_prefs_from(&path);
         assert_eq!(loaded, ActionPrefs::default());
-
-        // Restore original or clean up
-        let _ = std::fs::remove_file(&path);
-        if let Some(backup_data) = original_backup {
-            let _ = std::fs::write(&path, backup_data);
-        }
     }
 
     #[test]
     fn action_prefs_corrupt_json_recovers_to_default() {
-        let _guard = ACTION_PREFS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let path = action_prefs_path();
-        // Save original if it exists
-        let original_backup = std::fs::read(&path).ok();
-
-        // Create parent dirs if needed
+        let path = test_scratch_dir("action-prefs-corrupt").join("action-prefs.json");
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-
-        // Write garbage bytes (not valid JSON)
         std::fs::write(&path, b"not valid json garbage{").expect("write garbage");
 
-        // Load should return default and log warning
-        let loaded = load_action_prefs();
+        let loaded = load_action_prefs_from(&path);
         assert_eq!(loaded, ActionPrefs::default());
 
-        // Restore original or clean up
         let _ = std::fs::remove_file(&path);
-        if let Some(backup_data) = original_backup {
-            let _ = std::fs::write(&path, backup_data);
-        }
     }
 
     #[test]
@@ -2763,5 +3182,188 @@ mod tests {
         let dir2 = viewer_profile_dir();
         assert_eq!(dir1, dir2, "path should be stable across calls");
         assert!(dir2.is_dir(), "viewer profile dir should still exist after second call");
+    }
+
+    // --- merge_converted_statuses upgrade-only (018 FIX-11) ---
+
+    /// A live row already advanced to `Converted` is NEVER downgraded by a stale
+    /// snapshot that still carries the pre-conversion status for that path.
+    #[test]
+    fn merge_converted_never_downgrades_live_converted() {
+        let mut images = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::Converted,
+            AssetStatus::Processed,
+        )];
+        let snapshot = vec![entry_full(
+            "/d/a.png",
+            None,
+            FileStatus::NativeListed,
+            AssetStatus::Regular,
+        )];
+        merge_converted_statuses(&mut images, &snapshot);
+        assert_eq!(images[0].status, FileStatus::Converted);
+        assert_eq!(images[0].asset_status, AssetStatus::Processed);
+    }
+
+    // --- inventory rebuilt from the LIVE list after a Converted merge (018 FIX-2) ---
+
+    /// After a live mutation (a moved-away entry) races the async Converted
+    /// message, the inventory MUST be rebuilt from `self.images` (live), not the
+    /// stale scan-time snapshot — otherwise counts revert and break SC-005.
+    #[test]
+    fn inventory_rebuilt_from_live_list_after_converted_merge_fix2() {
+        // Scan-time snapshot captured 3 native images.
+        let snapshot = vec![entry("/d/a.png"), entry("/d/b.png"), entry("/d/c.png")];
+        // User moved c.png away before the Converted message landed → live has 2.
+        let mut images = vec![entry("/d/a.png"), entry("/d/b.png")];
+        merge_converted_statuses(&mut images, &snapshot);
+        let live = ScanInventory::from_entries(&images, 0, false);
+        let stale = ScanInventory::from_entries(&snapshot, 0, false);
+        assert_eq!(
+            live.native_listed, 2,
+            "inventory must reflect the live list"
+        );
+        assert_eq!(
+            stale.native_listed, 3,
+            "the snapshot would over-count (the bug)"
+        );
+    }
+
+    // --- Zone D drawer height math (018 FIX-8) ---
+
+    #[test]
+    fn sections_drawer_body_height_clamps_to_180_360() {
+        assert_eq!(sections_drawer_body_height(100.0), 180.0); // 40 → floor
+        assert_eq!(sections_drawer_body_height(1000.0), 360.0); // 400 → ceil
+        assert_eq!(sections_drawer_body_height(600.0), 240.0); // in range
+    }
+
+    #[test]
+    fn sections_drawer_reserved_height_collapsed_vs_expanded() {
+        assert_eq!(
+            sections_drawer_reserved_height(600.0, true),
+            DRAWER_TOGGLE_ROW_H
+        );
+        assert_eq!(
+            sections_drawer_reserved_height(600.0, false),
+            DRAWER_TOGGLE_ROW_H + 240.0
+        );
+    }
+
+    // --- AutoExpandState edge/latch policy (018 FIX-1, FR-003) ---
+
+    #[test]
+    fn auto_expand_rising_edge_inserts_once() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(open.contains(&InspectorSection::SessionStatus));
+        assert!(!collapsed, "rising edge un-collapses the drawer");
+        assert!(st.drawer_auto_opened);
+        // Idempotent: a second request in the same scope changes nothing.
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert_eq!(open.len(), 1);
+        assert_eq!(st.auto_open.len(), 1);
+    }
+
+    #[test]
+    fn auto_expand_falling_edge_retracts_auto_inserted_only() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        // A separately, user-opened section (not machine-owned).
+        open.insert(InspectorSection::ActivityLog);
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(
+            !open.contains(&InspectorSection::SessionStatus),
+            "auto section retracted"
+        );
+        assert!(
+            open.contains(&InspectorSection::ActivityLog),
+            "user section preserved"
+        );
+        assert!(!collapsed, "drawer stays open while any section is open");
+    }
+
+    #[test]
+    fn auto_expand_user_close_suppresses_reopen_within_scope() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        // User closes it (the header toggle removes from `open` and latches).
+        open.remove(&InspectorSection::SessionStatus);
+        st.note_user_close(InspectorSection::SessionStatus);
+        // Machine re-asserts in the same scope → suppressed, stays closed.
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(!open.contains(&InspectorSection::SessionStatus));
+        // A new scope lifts the latch.
+        st.begin_scope(InspectorSection::SessionStatus);
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(open.contains(&InspectorSection::SessionStatus));
+    }
+
+    #[test]
+    fn auto_expand_user_open_preserved_on_retraction() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        // Drawer already open by the user; user manually opens a section
+        // (user-owned, never machine-owned).
+        let mut collapsed = false;
+        open.insert(InspectorSection::SessionStatus);
+        st.note_user_open(InspectorSection::SessionStatus);
+        // A trigger's falling edge fires.
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(
+            open.contains(&InspectorSection::SessionStatus),
+            "user-open survives retraction"
+        );
+    }
+
+    #[test]
+    fn auto_expand_drawer_recollapses_after_last_retraction() {
+        // SC-001 / US1-AS2: scan opens the drawer, completion returns it to collapsed.
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(!collapsed);
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(open.is_empty());
+        assert!(collapsed, "drawer returns to collapsed");
+        assert!(!st.drawer_auto_opened);
+    }
+
+    #[test]
+    fn auto_expand_user_drawer_toggle_blocks_recollapse() {
+        let mut st = AutoExpandState::default();
+        let mut open = HashSet::new();
+        let mut collapsed = true;
+        st.request_open(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        st.note_user_drawer_toggle(); // user takes drawer ownership
+        st.retract(InspectorSection::SessionStatus, &mut open, &mut collapsed);
+        assert!(!open.contains(&InspectorSection::SessionStatus));
+        assert!(!collapsed, "drawer stays as the user left it");
+    }
+
+    #[test]
+    fn auto_expand_seeded_owns_startup_open_sections() {
+        let initial = initial_open_sections(true, true); // Dependencies open at startup
+        let st = AutoExpandState::seeded(&initial);
+        assert!(st.auto_open.contains(&InspectorSection::Dependencies));
+        assert!(!st.drawer_auto_opened, "startup keeps the drawer collapsed");
+    }
+
+    #[test]
+    fn initial_open_sections_semantics_unchanged() {
+        assert!(initial_open_sections(false, true).is_empty());
+        assert!(initial_open_sections(true, true).contains(&InspectorSection::Dependencies));
+        assert!(initial_open_sections(false, false).contains(&InspectorSection::FormatDiscovery));
+        // Browse is NEVER auto-opened at startup by this fn (edge machine owns that).
+        assert!(!initial_open_sections(true, false).contains(&InspectorSection::Browse));
     }
 }
