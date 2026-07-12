@@ -96,6 +96,7 @@ fn create_rust_feh_app(
         image_actions_detached: false,
         feh_instances_detached: false,
         inspector_open: initial_open_sections(deps_section_open, tools_panel_ok),
+        inspector_drawer_collapsed: true,
         format_route_open: HashSet::new(),
         start_folder_loaded: false,
         image_tools: ImageToolsService::new(None),
@@ -443,6 +444,10 @@ struct RustFehApp {
     feh_instances_detached: bool,
     /// Per-section fold state (018 Batch 1); replaces 7 discrete open-bools.
     inspector_open: HashSet<InspectorSection>,
+    /// Zone D meta-drawer fold state (018 Batch 2): true = the 7 detail
+    /// sections are hidden behind the "Details" toggle. Collapsed by default so
+    /// the file list (Zone C) is the primary content on launch.
+    inspector_drawer_collapsed: bool,
     image_tools: ImageToolsService,
     cache_config: CacheConfig,
     tools_panel: ImageToolsPanelState,
@@ -2667,55 +2672,82 @@ impl RustFehApp {
                 });
             });
 
-            ui.horizontal(|ui| {
-                ui.label("View:");
-                ui.add_enabled_ui(has_folder, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(
-                                self.list_view_mode == ListViewMode::FlatList,
-                                list_view_mode_label(ListViewMode::FlatList),
-                            )
-                            .clicked()
-                        {
-                            self.list_view_mode = ListViewMode::FlatList;
-                        }
-                        if ui
-                            .selectable_label(
-                                self.list_view_mode == ListViewMode::FolderTree,
-                                list_view_mode_label(ListViewMode::FolderTree),
-                            )
-                            .clicked()
-                        {
-                            self.list_view_mode = ListViewMode::FolderTree;
-                            if self.tree_expanded_paths.is_empty() {
-                                self.tree_expanded_paths = default_tree_expanded();
-                            }
-                        }
-                    });
-                });
-            });
         });
     }
 
     fn render_inspector_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, time: f64) {
-        // Per-frame auto-expand, applied BEFORE headers render so it takes
-        // effect the same frame (018 Batch 1/2.6): scanning always surfaces
-        // Session status; no folder loaded always surfaces Browse.
+        // Per-frame auto-expand, applied BEFORE zones render so it takes effect
+        // the same frame (018 Batch 1/2): scanning always surfaces Session
+        // status; no folder loaded always surfaces Browse. Because those
+        // sections now live inside the collapsed-by-default Zone D drawer, the
+        // drawer itself must also open, or the inserts have no visible effect.
         if self.scanning {
             self.inspector_open.insert(InspectorSection::SessionStatus);
         }
         if self.current_dir.is_none() {
             self.inspector_open.insert(InspectorSection::Browse);
         }
+        if self.scanning || self.current_dir.is_none() {
+            self.inspector_drawer_collapsed = false;
+        }
+
+        // Stable base for the Zone D height clamp: the full inspector content
+        // height, captured once before any zone consumes vertical space.
+        let full_h = ui.available_height();
 
         let (total, filtered) = self.compute_list_indices();
         let shown = filtered.len();
+        let list_root = self.current_dir.clone();
 
-        ui.heading("Inspector");
-        ui.label("Browse, image actions, session, and format routing.");
-        ui.separator();
+        // Zone A: persistent nav strip (Up + Flat/Tree + spinner + breadcrumb).
+        self.render_inspector_nav_strip(ui);
+        // Zone B: subfolder drill-down (hidden when there are no subfolders).
+        self.render_inspector_subfolder_drilldown(ui);
+        // Zone C (PRIMARY): the flat/tree image list, virtualized via show_rows.
+        self.render_inspector_file_list(ui, &filtered, list_root.as_deref(), full_h);
 
+        // Zone D: collapsed-by-default meta-drawer gating the 7 detail sections.
+        ui.horizontal(|ui| {
+            let toggle_label = if self.inspector_drawer_collapsed {
+                "▶ Details"
+            } else {
+                "▼ Details"
+            };
+            if ui.small_button(toggle_label).clicked() {
+                self.inspector_drawer_collapsed = !self.inspector_drawer_collapsed;
+            }
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Browse · actions · session · log · deps · formats")
+                        .weak(),
+                )
+                .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+        });
+        if self.inspector_drawer_collapsed {
+            return;
+        }
+        let drawer_body_h = Self::sections_drawer_body_height(full_h);
+        egui::ScrollArea::vertical()
+            .id_salt("inspector_sections_drawer")
+            .max_height(drawer_body_h)
+            .show(ui, |ui| {
+                self.render_inspector_sections_drawer_body(ui, ctx, shown, total, time);
+            });
+    }
+
+    /// Zone D body (018 Batch 2): the 7 detail `CollapsingHeader`s, unchanged
+    /// from Batch 1 except for being wrapped in the bounded drawer ScrollArea
+    /// above instead of rendering inline in the (now-removed) infinite outer
+    /// ScrollArea.
+    fn render_inspector_sections_drawer_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        shown: usize,
+        total: usize,
+        time: f64,
+    ) {
         let browse_header = self.browse_header_label();
         let browse_response = egui::CollapsingHeader::new(browse_header)
             .id_salt("inspector_browse")
@@ -3042,6 +3074,8 @@ impl RustFehApp {
                         .on_hover_text(tip);
                     });
                 });
+
+            self.render_scan_inventory_banner(ui, self.current_dir.as_deref());
         });
     }
 
@@ -3289,61 +3323,150 @@ impl RustFehApp {
             .exact_width(inspector_w)
             .show(ctx, |ui| {
                 ui.set_max_width(inspector_w);
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let time = ctx.input(|i| i.time);
-                        self.render_inspector_panel(ui, ctx, time);
-                    });
+                let time = ctx.input(|i| i.time);
+                self.render_inspector_panel(ui, ctx, time);
             });
     }
 
-    /// Drill-down subfolder row (feature 017): Up-button, current-folder
-    /// breadcrumb, and one selectable row per immediate subfolder of
-    /// current_dir. Collect-then-act: clicks are recorded into a local
-    /// `target` while iterating (which borrows `self.subfolders`/`self`
-    /// immutably inside the ui closures), and `navigate_to_folder` (which
-    /// needs `&mut self`) is only called afterward, once those borrows have
-    /// ended — avoids a borrow-checker conflict between iterating self state
-    /// and mutating self in the same closure.
-    fn render_subfolder_nav(&mut self, ui: &mut egui::Ui) {
-        let Some(cur) = self.current_dir.clone() else {
-            return;
-        };
+    /// Zone A (018 Batch 2): persistent single-row nav strip — Up button,
+    /// Flat/Tree view toggle, subfolder-scan spinner, and the truncated
+    /// current-folder breadcrumb (hover shows the full path). The breadcrumb is
+    /// placed last so it truncates within the row's remaining width rather than
+    /// pushing the toggle off the edge. Collect-then-act: the Up click is
+    /// recorded into `target` and `navigate_to_folder` (needs `&mut self`) runs
+    /// only after the ui closure's borrows end.
+    fn render_inspector_nav_strip(&mut self, ui: &mut egui::Ui) {
+        let cur = self.current_dir.clone();
+        let has_folder = cur.is_some();
+        let up_target = cur.as_ref().and_then(|c| c.parent()).map(|p| p.to_path_buf());
         let mut target: Option<PathBuf> = None;
         ui.horizontal(|ui| {
-            let up_enabled = cur.parent().is_some();
             if ui
-                .add_enabled(up_enabled, egui::Button::new("⬆ Up"))
+                .add_enabled(up_target.is_some(), egui::Button::new("⬆ Up"))
                 .clicked()
             {
-                if let Some(parent) = cur.parent() {
-                    target = Some(parent.to_path_buf());
-                }
+                target = up_target.clone();
             }
-            ui.weak(cur.display().to_string());
+            ui.add_enabled_ui(has_folder, |ui| {
+                if ui
+                    .selectable_label(
+                        self.list_view_mode == ListViewMode::FlatList,
+                        list_view_mode_label(ListViewMode::FlatList),
+                    )
+                    .clicked()
+                {
+                    self.list_view_mode = ListViewMode::FlatList;
+                }
+                if ui
+                    .selectable_label(
+                        self.list_view_mode == ListViewMode::FolderTree,
+                        list_view_mode_label(ListViewMode::FolderTree),
+                    )
+                    .clicked()
+                {
+                    self.list_view_mode = ListViewMode::FolderTree;
+                    if self.tree_expanded_paths.is_empty() {
+                        self.tree_expanded_paths = default_tree_expanded();
+                    }
+                }
+            });
             if self.subfolders_pending {
                 ui.spinner();
             }
+            if let Some(cur) = &cur {
+                let dir_str = cur.display().to_string();
+                ui.add(
+                    egui::Label::new(dir_str.clone())
+                        .selectable(true)
+                        .wrap_mode(egui::TextWrapMode::Truncate),
+                )
+                .on_hover_text(dir_str);
+            }
         });
-        if !self.subfolders.is_empty() {
-            egui::ScrollArea::vertical()
-                .id_salt("subfolder_nav")
-                .max_height(120.0)
-                .show(ui, |ui| {
-                    for folder in &self.subfolders {
-                        let name = folder
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| folder.display().to_string());
-                        if ui.selectable_label(false, format!("📁 {name}")).clicked() {
-                            target = Some(folder.clone());
-                        }
-                    }
-                });
-        }
         if let Some(dir) = target {
             self.navigate_to_folder(&dir);
+        }
+    }
+
+    /// Zone B (018 Batch 2): drill-down rows for the immediate subfolders of the
+    /// current folder, in a bounded 120px scroll. Hidden entirely when there are
+    /// no subfolders. Collect-then-act as in Zone A.
+    fn render_inspector_subfolder_drilldown(&mut self, ui: &mut egui::Ui) {
+        if self.subfolders.is_empty() {
+            return;
+        }
+        let mut target: Option<PathBuf> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("subfolder_nav")
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for folder in &self.subfolders {
+                    let name = folder
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| folder.display().to_string());
+                    if ui.selectable_label(false, format!("📁 {name}")).clicked() {
+                        target = Some(folder.clone());
+                    }
+                }
+            });
+        if let Some(dir) = target {
+            self.navigate_to_folder(&dir);
+        }
+    }
+
+    /// Zone C (018 Batch 2, PRIMARY): the flat or tree image list, virtualized
+    /// via `show_rows`. Sized to the live remaining inspector height minus the
+    /// flat column-header row and the space Zone D will occupy below it; floored
+    /// at four rows so it never vanishes. Zones A/B were placed earlier in this
+    /// same `ui`, so `ui.available_height()` here already excludes them — no
+    /// fixed banner/subfolder estimate is subtracted (that was the old
+    /// central-panel double-count; see 018 O-review Batch 2 notes).
+    fn render_inspector_file_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        filtered: &[usize],
+        list_root: Option<&Path>,
+        full_h: f32,
+    ) {
+        let row_h = 18.0;
+        let header_h = row_h + ui.spacing().item_spacing.y;
+        let drawer_reserved = self.sections_drawer_reserved_height(full_h);
+        let total_w = ui.available_width();
+        let metrics = ImageListMetrics {
+            list_height: (ui.available_height() - header_h - drawer_reserved).max(row_h * 4.0),
+            folder_col_w: total_w * 0.35,
+            status_col_w: total_w * 0.25,
+            row_h,
+        };
+        egui::Frame::group(ui.style())
+            .inner_margin(4.0)
+            .show(ui, |ui| {
+                if self.list_view_mode == ListViewMode::FlatList {
+                    self.render_flat_image_list(ui, filtered, list_root, metrics);
+                } else {
+                    self.render_tree_image_list(ui, list_root, metrics.list_height, row_h);
+                }
+            });
+    }
+
+    /// Inner scroll-body height of the expanded Zone D drawer. Clamped so the
+    /// drawer never starves Zone C nor grows unbounded. Base is the full
+    /// inspector content height (captured once, before any zone renders) so the
+    /// drawer size is stable frame-to-frame regardless of Zone A/B content.
+    fn sections_drawer_body_height(full_h: f32) -> f32 {
+        (full_h * 0.4).clamp(180.0, 360.0)
+    }
+
+    /// Total vertical space Zone D consumes, which Zone C reserves before it
+    /// renders. Collapsed: just the ~24px toggle row. Expanded: toggle row plus
+    /// the bounded scroll body.
+    fn sections_drawer_reserved_height(&self, full_h: f32) -> f32 {
+        let toggle_row_h = 24.0;
+        if self.inspector_drawer_collapsed {
+            toggle_row_h
+        } else {
+            toggle_row_h + Self::sections_drawer_body_height(full_h)
         }
     }
 
@@ -3587,63 +3710,18 @@ impl RustFehApp {
         self.tree_rows_cache = tree_rows; // restore
     }
 
-    fn render_central_image_panel(
-        &mut self,
-        ctx: &egui::Context,
-        filtered: &[usize],
-        list_root: Option<&Path>,
-    ) {
+    /// Central panel after 018 Batch 2 (decision 2): the file list, subfolder
+    /// nav, and inventory banner all moved into the inspector (Zones A-D); the
+    /// central panel now renders ONLY the stage (currently-viewed) image,
+    /// filling the panel.
+    fn render_central_image_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::Frame::group(ui.style())
                 .inner_margin(6.0)
                 .show(ui, |ui| {
-                    ui.label("Images (filter matches folder or filename; click a row to select):");
+                    self.render_stage_pane(ui);
                 });
-            self.render_scan_inventory_banner(ui, list_root);
-            self.render_subfolder_nav(ui);
-
-            let row_h = 18.0;
-            let header_h = row_h + ui.spacing().item_spacing.y;
-            let inventory_h = if self.scan_inventory.is_some() {
-                120.0
-            } else {
-                0.0
-            };
-            let total_w = ui.available_width();
-            let stage_reserved_h = self.stage_pane_reserved_height();
-            let metrics = ImageListMetrics {
-                list_height: (ui.available_height() - header_h - inventory_h - stage_reserved_h)
-                    .max(row_h * 4.0),
-                folder_col_w: total_w * 0.35,
-                status_col_w: total_w * 0.25,
-                row_h,
-            };
-
-            egui::Frame::group(ui.style())
-                .inner_margin(4.0)
-                .show(ui, |ui| {
-                    if self.list_view_mode == ListViewMode::FlatList {
-                        self.render_flat_image_list(ui, filtered, list_root, metrics);
-                    } else {
-                        self.render_tree_image_list(ui, list_root, metrics.list_height, row_h);
-                    }
-                });
-
-            ui.add_space(4.0);
-            self.render_stage_pane(ui);
         });
-    }
-
-    /// Fixed height reserved below the list for the stage pane (feature 016,
-    /// contracts/stage-context-menu.md: "list usability at 10k images is
-    /// unchanged" — the list keeps priority; the stage takes a bounded slice
-    /// of the remaining height, collapsible to a header-only row).
-    fn stage_pane_reserved_height(&self) -> f32 {
-        if self.stage_pane_collapsed {
-            22.0
-        } else {
-            220.0
-        }
     }
 
     fn request_repaint_if_busy(&self, ctx: &egui::Context) {
@@ -4045,11 +4123,7 @@ impl App for RustFehApp {
 
         self.render_top_menu_bar(ctx);
         self.render_inspector_side_panel(ctx);
-
-        // Recompute after menus/inspector — Rescan clears images mid-frame.
-        let list_root = self.current_dir.clone();
-        let (_total, filtered) = self.compute_list_indices();
-        self.render_central_image_panel(ctx, &filtered, list_root.as_deref());
+        self.render_central_image_panel(ctx);
 
         self.render_clipboard_context_menu(ctx);
         self.render_detached_inspector_windows(ctx);
