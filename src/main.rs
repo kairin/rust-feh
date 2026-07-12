@@ -965,7 +965,7 @@ impl RustFehApp {
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(4.0, 2.0))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     ui.style().visuals.widgets.noninteractive.bg_stroke.color,
                 ))
                 .show(ui, |ui| {
@@ -1091,7 +1091,7 @@ impl RustFehApp {
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(4.0, 2.0))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 ui.style().visuals.widgets.noninteractive.bg_stroke.color,
             ))
             .show(ui, |ui| {
@@ -2915,7 +2915,7 @@ impl RustFehApp {
         let pulse_stroke = if self.scanning {
             let pulse = ((time * 5.0).sin() * 0.5 + 0.5) as f32;
             egui::Stroke::new(
-                1.5,
+                1.5_f32,
                 egui::Color32::from_rgb(
                     (80.0 + 100.0 * pulse) as u8,
                     (160.0 + 60.0 * pulse) as u8,
@@ -3172,7 +3172,7 @@ impl RustFehApp {
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(4.0, 2.0))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     ui.style().visuals.widgets.noninteractive.bg_stroke.color,
                 ))
                 .show(ui, |ui| {
