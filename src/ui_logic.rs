@@ -1593,6 +1593,103 @@ pub fn stage_decode_bounds(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
     (new_w, new_h)
 }
 
+/// Inspector section identifiers (018 Batch 1), in the order they render in
+/// `render_inspector_panel`. Replaces 7 discrete open-bool fields with a
+/// single `HashSet<InspectorSection>` fold-state set on `RustFehApp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InspectorSection {
+    Browse,
+    ImageActions,
+    FehInstances,
+    SessionStatus,
+    ActivityLog,
+    Dependencies,
+    FormatDiscovery,
+}
+
+impl InspectorSection {
+    /// All sections, in render order. Iterate this (never a `HashMap`/`HashSet`)
+    /// whenever section ORDER matters (e.g. detached-window spawn order in a
+    /// later batch) — set iteration order is not guaranteed.
+    pub const ALL: [InspectorSection; 7] = [
+        InspectorSection::Browse,
+        InspectorSection::ImageActions,
+        InspectorSection::FehInstances,
+        InspectorSection::SessionStatus,
+        InspectorSection::ActivityLog,
+        InspectorSection::Dependencies,
+        InspectorSection::FormatDiscovery,
+    ];
+}
+
+/// Initial fold-state at app startup: every section starts COLLAPSED except the
+/// two conditional-open ones — Dependencies when a required tool is missing,
+/// FormatDiscovery when the format-routing tools panel is not fully OK.
+pub fn initial_open_sections(
+    has_missing_required: bool,
+    tools_panel_ok: bool,
+) -> HashSet<InspectorSection> {
+    let mut open = HashSet::new();
+    if has_missing_required {
+        open.insert(InspectorSection::Dependencies);
+    }
+    if !tools_panel_ok {
+        open.insert(InspectorSection::FormatDiscovery);
+    }
+    open
+}
+
+/// A pinnable target for a detached inspector panel (018 decision 4). Only one
+/// variant today (a single pinned image); the enum leaves room for a future
+/// folder pin without changing `DetachedWindow`/`PanelContext` call sites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelPin {
+    Image(PathBuf),
+}
+
+/// State for one detached (floating) inspector-section window: whether it is
+/// pinned to a specific target rather than following the live selection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DetachedWindow {
+    pub pin: Option<PanelPin>,
+}
+
+/// The resolved (image, folder) an inspector body should act on: either the
+/// live selection/current folder, or a pinned target when `pinned` is true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelContext {
+    pub image: Option<PathBuf>,
+    pub folder: Option<PathBuf>,
+    pub pinned: bool,
+}
+
+impl PanelContext {
+    /// Resolve a panel's acting context: a `PanelPin::Image` pin wins outright
+    /// (its parent directory becomes the folder); otherwise fall back to the
+    /// live selection/current folder. Pure — callers own cloning `self.selected`
+    /// / `self.current_dir` BEFORE calling into a body that needs `&mut self`
+    /// (collect-then-act), per the existing pattern at the round-trip landing
+    /// call site.
+    pub fn resolve(
+        pin: Option<&PanelPin>,
+        live_image: Option<&Path>,
+        live_folder: Option<&Path>,
+    ) -> PanelContext {
+        match pin {
+            Some(PanelPin::Image(path)) => PanelContext {
+                folder: path.parent().map(Path::to_path_buf),
+                image: Some(path.clone()),
+                pinned: true,
+            },
+            None => PanelContext {
+                image: live_image.map(Path::to_path_buf),
+                folder: live_folder.map(Path::to_path_buf),
+                pinned: false,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

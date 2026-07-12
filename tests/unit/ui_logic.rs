@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
+use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rust_feh::types::{
@@ -10,8 +11,9 @@ use rust_feh::types::{
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, aggregate_batch_results, build_entry_filelist,
     compute_output_path, copy_image_to_clipboard, crop_preview_pixels, decode_image_to_rgba,
-    entry_is_launchable, expand_rename_pattern, list_subfolders, load_launch_list,
-    load_window_prefs, save_launch_list, save_window_prefs, write_feh_filelist_to,
+    entry_is_launchable, expand_rename_pattern, initial_open_sections, list_subfolders,
+    load_launch_list, load_window_prefs, save_launch_list, save_window_prefs,
+    write_feh_filelist_to, InspectorSection, PanelContext, PanelPin,
 };
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
@@ -323,4 +325,67 @@ fn test_entry_launchability_missing_empty_unassigned_and_feh() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn initial_open_sections_all_collapsed_when_healthy() {
+    let open = initial_open_sections(false, true);
+    assert!(open.is_empty());
+}
+
+#[test]
+fn initial_open_sections_opens_dependencies_when_missing_required() {
+    let open = initial_open_sections(true, true);
+    assert_eq!(open, HashSet::from([InspectorSection::Dependencies]));
+}
+
+#[test]
+fn initial_open_sections_opens_format_discovery_when_tools_panel_not_ok() {
+    let open = initial_open_sections(false, false);
+    assert_eq!(open, HashSet::from([InspectorSection::FormatDiscovery]));
+}
+
+#[test]
+fn initial_open_sections_opens_both_when_missing_and_not_ok() {
+    let open = initial_open_sections(true, false);
+    assert_eq!(
+        open,
+        HashSet::from([
+            InspectorSection::Dependencies,
+            InspectorSection::FormatDiscovery
+        ])
+    );
+}
+
+#[test]
+fn panel_context_resolves_pinned_image_over_live_selection() {
+    let pin = PanelPin::Image(PathBuf::from("/photos/pinned.png"));
+    let ctx = PanelContext::resolve(
+        Some(&pin),
+        Some(Path::new("/photos/live.png")),
+        Some(Path::new("/photos/other-folder")),
+    );
+    assert_eq!(ctx.image, Some(PathBuf::from("/photos/pinned.png")));
+    assert_eq!(ctx.folder, Some(PathBuf::from("/photos")));
+    assert!(ctx.pinned);
+}
+
+#[test]
+fn panel_context_falls_back_to_live_selection_when_unpinned() {
+    let ctx = PanelContext::resolve(
+        None,
+        Some(Path::new("/photos/live.png")),
+        Some(Path::new("/photos")),
+    );
+    assert_eq!(ctx.image, Some(PathBuf::from("/photos/live.png")));
+    assert_eq!(ctx.folder, Some(PathBuf::from("/photos")));
+    assert!(!ctx.pinned);
+}
+
+#[test]
+fn panel_context_unpinned_with_no_live_selection_is_empty() {
+    let ctx = PanelContext::resolve(None, None, None);
+    assert_eq!(ctx.image, None);
+    assert_eq!(ctx.folder, None);
+    assert!(!ctx.pinned);
 }

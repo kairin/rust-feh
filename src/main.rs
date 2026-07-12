@@ -20,7 +20,8 @@ use rust_feh::ui_logic::{
     feh_filelist_temp_path, feh_missing_status, feh_not_installed_launch_status, file_name_display,
     file_status_label, finalize_scan_entries_fast, folder_line_suffix, folder_tree_display_name,
     format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
-    inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
+    initial_open_sections, inventory_magick_hint, is_network_mount_path, join_activity_log,
+    list_indices,
     list_subfolders, list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
     merge_converted_statuses, plan_loss_proof_move, post_scan_status, prepare_fast_work_dir,
     refresh_entry_and_inventory,
@@ -28,7 +29,8 @@ use rust_feh::ui_logic::{
     scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
     tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
     window_preset_dimensions, window_preset_label, write_feh_filelist, write_feh_filelist_to,
-    EntryLaunchState, JobMsg, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY, FEH_VIEWER_ZOOM,
+    EntryLaunchState, InspectorSection, JobMsg, TreeRow, TreeRowKind, FEH_VIEWER_GEOMETRY,
+    FEH_VIEWER_ZOOM,
     WINDOW_MAX_RESIZABLE, WINDOW_MIN_RESIZABLE,
 };
 use std::collections::HashSet;
@@ -93,13 +95,7 @@ fn create_rust_feh_app(
         browse_detached: false,
         image_actions_detached: false,
         feh_instances_detached: false,
-        deps_section_open,
-        browse_section_open: true,
-        image_actions_section_open: true,
-        feh_instances_section_open: true,
-        activity_log_open: false,
-        session_status_open: false,
-        format_discovery_open: !tools_panel_ok,
+        inspector_open: initial_open_sections(deps_section_open, tools_panel_ok),
         format_route_open: HashSet::new(),
         start_folder_loaded: false,
         image_tools: ImageToolsService::new(None),
@@ -378,6 +374,14 @@ struct ListIndexKey {
     sort_mode: SortMode,
 }
 
+/// `(total_count, filtered_indices)` — the result of `compute_list_indices`,
+/// cached alongside the `ListIndexKey` it was computed for (018 B1.5: named to
+/// resolve `clippy::type_complexity` on the `list_index_cache` field).
+type ListIndexCacheValue = (usize, Vec<usize>);
+/// Cross-frame cache cell for `compute_list_indices`: `None` until first
+/// computed, then `Some((key, value))`.
+type ListIndexCache = std::cell::RefCell<Option<(ListIndexKey, ListIndexCacheValue)>>;
+
 #[derive(PartialEq)]
 struct TreeRowsKey {
     revision: u64,
@@ -437,11 +441,8 @@ struct RustFehApp {
     browse_detached: bool,
     image_actions_detached: bool,
     feh_instances_detached: bool,
-    activity_log_open: bool,
-    session_status_open: bool,
-    browse_section_open: bool,
-    image_actions_section_open: bool,
-    feh_instances_section_open: bool,
+    /// Per-section fold state (018 Batch 1); replaces 7 discrete open-bools.
+    inspector_open: HashSet<InspectorSection>,
     image_tools: ImageToolsService,
     cache_config: CacheConfig,
     tools_panel: ImageToolsPanelState,
@@ -451,9 +452,6 @@ struct RustFehApp {
     launch_entries: FehLaunchList,
     selected_tree_folder: Option<PathBuf>,
     clipboard_context_menu: Option<ClipboardContextMenu>,
-    /// Collapsed by default once required dependencies are OK.
-    deps_section_open: bool,
-    format_discovery_open: bool,
     format_route_open: HashSet<String>,
     /// Dev/test: auto-load `RUST_FEH_START_FOLDER` once on first frame.
     start_folder_loaded: bool,
@@ -479,7 +477,7 @@ struct RustFehApp {
     /// per-entry FileStatus/path). Cache-invalidation key for `compute_list_indices`.
     images_revision: u64,
     /// Frame/cross-frame cache for `compute_list_indices`: (key, (total, indices)).
-    list_index_cache: std::cell::RefCell<Option<(ListIndexKey, (usize, Vec<usize>))>>,
+    list_index_cache: ListIndexCache,
     /// Cross-frame cache for the folder-tree rows (reused when `TreeRowsKey` unchanged).
     tree_rows_cache: Vec<TreeRow>,
     tree_rows_cache_key: Option<TreeRowsKey>,
@@ -840,9 +838,11 @@ impl RustFehApp {
     fn refresh_tool_caps(&mut self) {
         self.tool_caps = ToolCapabilities::detect();
         self.feh_available = self.tool_caps.feh_available;
-        self.deps_section_open = self.tool_caps.has_missing_required();
         if self.tool_caps.has_missing_required() {
-            self.format_discovery_open = true;
+            self.inspector_open.insert(InspectorSection::Dependencies);
+            self.inspector_open.insert(InspectorSection::FormatDiscovery);
+        } else {
+            self.inspector_open.remove(&InspectorSection::Dependencies);
         }
         self.log(format!(
             "Rechecked tools: feh={}, magick={}",
@@ -976,6 +976,14 @@ impl RustFehApp {
             });
         });
         ui.add_space(4.0);
+    }
+
+    fn toggle_inspector_section(&mut self, section: InspectorSection) {
+        if self.inspector_open.contains(&section) {
+            self.inspector_open.remove(&section);
+        } else {
+            self.inspector_open.insert(section);
+        }
     }
 
     fn toggle_format_route(&mut self, route_id: &str) {
@@ -2691,6 +2699,16 @@ impl RustFehApp {
     }
 
     fn render_inspector_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, time: f64) {
+        // Per-frame auto-expand, applied BEFORE headers render so it takes
+        // effect the same frame (018 Batch 1/2.6): scanning always surfaces
+        // Session status; no folder loaded always surfaces Browse.
+        if self.scanning {
+            self.inspector_open.insert(InspectorSection::SessionStatus);
+        }
+        if self.current_dir.is_none() {
+            self.inspector_open.insert(InspectorSection::Browse);
+        }
+
         let (total, filtered) = self.compute_list_indices();
         let shown = filtered.len();
 
@@ -2701,36 +2719,40 @@ impl RustFehApp {
         let browse_header = self.browse_header_label();
         let browse_response = egui::CollapsingHeader::new(browse_header)
             .id_salt("inspector_browse")
-            .open(Some(self.browse_section_open))
+            .open(Some(self.inspector_open.contains(&InspectorSection::Browse)))
             .show(ui, |ui| {
                 self.render_inspector_browse(ui);
             });
         if browse_response.header_response.clicked() {
-            self.browse_section_open = !self.browse_section_open;
+            self.toggle_inspector_section(InspectorSection::Browse);
         }
 
         let actions_header = self.image_actions_header_label();
         let actions_response = egui::CollapsingHeader::new(actions_header)
             .id_salt("inspector_image_actions")
-            .open(Some(self.image_actions_section_open))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::ImageActions),
+            ))
             .show(ui, |ui| {
                 self.render_inspector_image_actions(ui);
                 ui.separator();
                 self.render_inspector_image_tools(ui, ctx);
             });
         if actions_response.header_response.clicked() {
-            self.image_actions_section_open = !self.image_actions_section_open;
+            self.toggle_inspector_section(InspectorSection::ImageActions);
         }
 
         let feh_instances_header = self.feh_instances_header_label();
         let feh_instances_response = egui::CollapsingHeader::new(feh_instances_header)
             .id_salt("inspector_feh_instances")
-            .open(Some(self.feh_instances_section_open))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::FehInstances),
+            ))
             .show(ui, |ui| {
                 self.render_inspector_feh_instances(ui);
             });
         if feh_instances_response.header_response.clicked() {
-            self.feh_instances_section_open = !self.feh_instances_section_open;
+            self.toggle_inspector_section(InspectorSection::FehInstances);
         }
 
         let pulse_fill = if self.scanning {
@@ -2754,7 +2776,9 @@ impl RustFehApp {
         let status_header = self.session_status_header_rich(shown, total, time);
         let status_response = egui::CollapsingHeader::new(status_header)
             .id_salt("inspector_session_status")
-            .open(Some(self.session_status_open))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::SessionStatus),
+            ))
             .show(ui, |ui| {
                 if self.scanning && !self.session_status_detached {
                     egui::Frame::none()
@@ -2769,43 +2793,46 @@ impl RustFehApp {
                 }
             });
         if status_response.header_response.clicked() {
-            self.session_status_open = !self.session_status_open;
-        }
-        if self.scanning && !self.session_status_open {
-            self.session_status_open = true;
+            self.toggle_inspector_section(InspectorSection::SessionStatus);
         }
 
         let log_header = self.activity_log_header_label();
         let log_response = egui::CollapsingHeader::new(log_header)
             .id_salt("inspector_activity_log")
-            .open(Some(self.activity_log_open))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::ActivityLog),
+            ))
             .show(ui, |ui| {
                 self.render_inspector_activity_log(ui, ctx);
             });
         if log_response.header_response.clicked() {
-            self.activity_log_open = !self.activity_log_open;
+            self.toggle_inspector_section(InspectorSection::ActivityLog);
         }
 
         let deps_header = self.deps_header_label();
         let deps_response = egui::CollapsingHeader::new(deps_header)
             .id_salt("tool_deps")
-            .open(Some(self.deps_section_open))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::Dependencies),
+            ))
             .show(ui, |ui| {
                 self.render_inspector_dependencies(ui, ctx);
             });
         if deps_response.header_response.clicked() {
-            self.deps_section_open = !self.deps_section_open;
+            self.toggle_inspector_section(InspectorSection::Dependencies);
         }
 
         let fd_header = self.format_discovery_header_label();
         let fd_response = egui::CollapsingHeader::new(fd_header)
             .id_salt("tool_format_discovery")
-            .open(Some(self.format_discovery_open))
+            .open(Some(
+                self.inspector_open.contains(&InspectorSection::FormatDiscovery),
+            ))
             .show(ui, |ui| {
                 self.render_inspector_format_discovery(ui);
             });
         if fd_response.header_response.clicked() {
-            self.format_discovery_open = !self.format_discovery_open;
+            self.toggle_inspector_section(InspectorSection::FormatDiscovery);
         }
 
         if self.tool_caps.has_missing_required() {
@@ -2953,7 +2980,7 @@ impl RustFehApp {
         // the window is so narrow the cap falls below 280, the cap wins — and
         // floor == upper here avoids an f32::clamp(min > max) panic.
         let upper = Self::inspector_max_width(ctx);
-        let floor = 280.0_f32.min(upper);
+        let floor = 440.0_f32.min(upper);
         (max_text + PANEL_CHROME).clamp(floor, upper)
     }
 
