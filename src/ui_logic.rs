@@ -775,6 +775,26 @@ fn add_entry_to_tree(root: &mut FolderTreeNode, folder: &str, idx: usize, status
     leaf.file_indices.push(idx);
 }
 
+/// Non-recursive listing of immediate subdirectories of `dir`, sorted by path
+/// (feature 017 drill-down navigation). Missing/unreadable dir -> empty Vec,
+/// never panics.
+pub fn list_subfolders(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| {
+            e.file_type()
+                .map(|ft| ft.is_dir())
+                .unwrap_or_else(|_| e.path().is_dir())
+        })
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    out
+}
+
 /// Build folder hierarchy from filtered/sorted entry indices (FR-009).
 pub fn build_folder_tree(
     images: &[ImageEntry],

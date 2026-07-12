@@ -21,7 +21,7 @@ use rust_feh::ui_logic::{
     file_status_label, finalize_scan_entries_fast, folder_line_suffix, folder_tree_display_name,
     format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
     inventory_magick_hint, is_network_mount_path, join_activity_log, list_indices,
-    list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
+    list_subfolders, list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
     plan_loss_proof_move, post_scan_status, prepare_fast_work_dir, refresh_entry_and_inventory,
     relative_folder, save_action_prefs, save_copy_to, save_launch_list, save_window_prefs,
     scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
@@ -79,6 +79,12 @@ fn create_rust_feh_app(
         scan_generation: 0,
         scan_rx: None,
         scan_cancel: Arc::new(AtomicBool::new(false)),
+        subfolders: Vec::new(),
+        subfolders_dir: None,
+        subfolder_generation: 0,
+        subfolder_rx: None,
+        subfolders_pending: false,
+        pending_select_path: None,
         activity_log_detached: false,
         session_status_detached: false,
         deps_detached: false,
@@ -410,6 +416,18 @@ struct RustFehApp {
     scan_generation: u64,
     scan_rx: Option<Receiver<ScanMsg>>,
     scan_cancel: Arc<AtomicBool>,
+    /// Immediate subdirectories of `current_dir` (feature 017 drill-down nav).
+    subfolders: Vec<PathBuf>,
+    /// Directory `subfolders` was computed for (None until first request).
+    subfolders_dir: Option<PathBuf>,
+    /// Bumped on every request_subfolders call; stale off-thread results are discarded.
+    subfolder_generation: u64,
+    subfolder_rx: Option<Receiver<SubfolderMsg>>,
+    /// True while an off-thread list_subfolders request is in flight.
+    subfolders_pending: bool,
+    /// Set by a cross-folder round-trip landing (Phase 4); consumed by
+    /// apply_scan_result so the auto-select-first-image doesn't clobber it.
+    pending_select_path: Option<PathBuf>,
     activity_log_detached: bool,
     session_status_detached: bool,
     deps_detached: bool,
@@ -499,6 +517,13 @@ enum ScanMsg {
     },
 }
 
+/// Off-thread `list_subfolders` result; stale generations are discarded on receipt.
+struct SubfolderMsg {
+    generation: u64,
+    dir: PathBuf,
+    folders: Vec<PathBuf>,
+}
+
 /// Longest edge (px) for stage-pane decodes (feature 016, R5).
 const STAGE_MAX_EDGE: u32 = 2048;
 
@@ -582,11 +607,22 @@ impl RustFehApp {
         value
     }
 
+    /// Single entry point for changing the active folder (feature 017
+    /// drill-down nav): updates current_dir, clears any stale search filter,
+    /// kicks a fresh scan, and requests the new folder's immediate subfolder
+    /// listing. Used by folder-picker, the start-folder env hook, subfolder
+    /// row clicks, Up/breadcrumb nav, and cross-folder round-trip landing.
+    fn navigate_to_folder(&mut self, dir: &Path) {
+        self.current_dir = Some(dir.to_path_buf());
+        self.search.clear();
+        self.scan_directory(dir);
+        self.request_subfolders(dir);
+    }
+
     fn pick_folder(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             self.log(format!("User chose folder: {}", dir.display()));
-            self.current_dir = Some(dir.clone());
-            self.scan_directory(&dir);
+            self.navigate_to_folder(&dir);
         }
     }
 
@@ -611,8 +647,7 @@ impl RustFehApp {
             "Auto-loading RUST_FEH_START_FOLDER: {}",
             path.display()
         ));
-        self.current_dir = Some(path.clone());
-        self.scan_directory(&path);
+        self.navigate_to_folder(&path);
     }
 
     fn feh_button(ui: &mut egui::Ui, label: &str, available: bool, enabled: bool) -> egui::Response {
@@ -1202,10 +1237,15 @@ impl RustFehApp {
                 folders.push(dir.clone());
             }
         }
-        for image in &self.images {
-            if let Some(parent) = image.path.parent() {
-                if seen.insert(parent.to_path_buf()) {
-                    folders.push(parent.to_path_buf());
+        for folder in &self.subfolders {
+            if seen.insert(folder.clone()) {
+                folders.push(folder.clone());
+            }
+        }
+        for entry in &self.launch_entries.entries {
+            if let Some(folder) = &entry.folder_path {
+                if seen.insert(folder.clone()) {
+                    folders.push(folder.clone());
                 }
             }
         }
@@ -3130,6 +3170,55 @@ impl RustFehApp {
             });
     }
 
+    /// Drill-down subfolder row (feature 017): Up-button, current-folder
+    /// breadcrumb, and one selectable row per immediate subfolder of
+    /// current_dir. Collect-then-act: clicks are recorded into a local
+    /// `target` while iterating (which borrows `self.subfolders`/`self`
+    /// immutably inside the ui closures), and `navigate_to_folder` (which
+    /// needs `&mut self`) is only called afterward, once those borrows have
+    /// ended — avoids a borrow-checker conflict between iterating self state
+    /// and mutating self in the same closure.
+    fn render_subfolder_nav(&mut self, ui: &mut egui::Ui) {
+        let Some(cur) = self.current_dir.clone() else {
+            return;
+        };
+        let mut target: Option<PathBuf> = None;
+        ui.horizontal(|ui| {
+            let up_enabled = cur.parent().is_some();
+            if ui
+                .add_enabled(up_enabled, egui::Button::new("⬆ Up"))
+                .clicked()
+            {
+                if let Some(parent) = cur.parent() {
+                    target = Some(parent.to_path_buf());
+                }
+            }
+            ui.weak(cur.display().to_string());
+            if self.subfolders_pending {
+                ui.spinner();
+            }
+        });
+        if !self.subfolders.is_empty() {
+            egui::ScrollArea::vertical()
+                .id_salt("subfolder_nav")
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for folder in &self.subfolders {
+                        let name = folder
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| folder.display().to_string());
+                        if ui.selectable_label(false, format!("📁 {name}")).clicked() {
+                            target = Some(folder.clone());
+                        }
+                    }
+                });
+        }
+        if let Some(dir) = target {
+            self.navigate_to_folder(&dir);
+        }
+    }
+
     fn render_scan_inventory_banner(&self, ui: &mut egui::Ui, list_root: Option<&Path>) {
         let (Some(inv), Some(dir)) = (&self.scan_inventory, &self.current_dir) else {
             return;
@@ -3382,6 +3471,7 @@ impl RustFehApp {
                     ui.label("Images (filter matches folder or filename; click a row to select):");
                 });
             self.render_scan_inventory_banner(ui, list_root);
+            self.render_subfolder_nav(ui);
 
             let row_h = 18.0;
             let header_h = row_h + ui.spacing().item_spacing.y;
@@ -3816,6 +3906,7 @@ impl App for RustFehApp {
         self.apply_startup_window_prefs(ctx);
         self.maybe_load_start_folder();
         self.poll_scan_complete(ctx);
+        self.poll_subfolders(ctx);
         self.poll_tools_job(ctx);
         Self::emit_startup_notice_once();
         self.sync_frame_input_state(ctx);
@@ -3933,6 +4024,51 @@ impl RustFehApp {
         }
     }
 
+    /// Kick an off-thread, non-recursive listing of `dir`'s immediate
+    /// subfolders (feature 017 drill-down nav). Coalesced/superseded via
+    /// subfolder_generation the same way scan_directory supersedes scans.
+    fn request_subfolders(&mut self, dir: &Path) {
+        self.subfolder_generation = self.subfolder_generation.wrapping_add(1);
+        let generation = self.subfolder_generation;
+        self.subfolders.clear();
+        self.subfolders_dir = Some(dir.to_path_buf());
+        self.subfolders_pending = true;
+        let dir_path = dir.to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        self.subfolder_rx = Some(rx);
+        thread::spawn(move || {
+            let folders = list_subfolders(&dir_path);
+            let _ = tx.send(SubfolderMsg {
+                generation,
+                dir: dir_path,
+                folders,
+            });
+        });
+    }
+
+    /// Poll the off-thread subfolder listing; coalesces multiple queued
+    /// messages (keeps only the last) and discards results from a
+    /// superseded generation (GEN GUARD).
+    fn poll_subfolders(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.subfolder_rx else {
+            return;
+        };
+        let mut latest = None;
+        while let Ok(msg) = rx.try_recv() {
+            latest = Some(msg);
+        }
+        if let Some(msg) = latest {
+            if msg.generation == self.subfolder_generation {
+                self.subfolders = msg.folders;
+                self.subfolders_dir = Some(msg.dir);
+                self.subfolders_pending = false;
+            }
+        }
+        if self.subfolders_pending {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn scan_directory(&mut self, dir: &Path) {
         self.cancel_tools_job();
         self.cleanup_prepare_fast_temp();
@@ -3940,6 +4076,7 @@ impl RustFehApp {
         self.status = "Scanning…".to_string();
         self.selected = None;
         self.images.clear();
+        self.pending_select_path = None;
         // cache invariant: bump on every self.images mutation
         self.images_revision = self.images_revision.wrapping_add(1);
         self.selected_tree_folder = None;
@@ -4055,8 +4192,13 @@ impl RustFehApp {
         if self.images.is_empty() {
             self.status = post_scan_status("No images found", self.feh_available);
             self.selected = None;
+            self.pending_select_path = None;
         } else {
-            let p = self.images[0].path.clone();
+            let target = self
+                .pending_select_path
+                .take()
+                .filter(|p| self.images.iter().any(|e| &e.path == p));
+            let p = target.unwrap_or_else(|| self.images[0].path.clone());
             self.selected = Some(p.clone());
             self.status = post_scan_status(
                 &format!(
@@ -4204,6 +4346,23 @@ impl RustFehApp {
     /// If it no longer passes the active filter, clear the filter rather than
     /// silently dropping the handoff (US2-3).
     fn stage_selection_from_round_trip(&mut self, path: &Path) {
+        let parent = path.parent();
+        if self.current_dir.as_deref() != parent {
+            // Landed on an image outside the currently-loaded folder (feature
+            // 017 Phase 4): switch folders first. navigate_to_folder's
+            // synchronous scan_directory reset clears pending_select_path, so
+            // we set it AFTER calling navigate_to_folder — apply_scan_result
+            // will pick it up once the async rescan completes and land the
+            // selection there instead of defaulting to images[0].
+            if let Some(parent) = parent {
+                self.navigate_to_folder(parent);
+            }
+            self.pending_select_path = Some(path.to_path_buf());
+            self.pending_scroll_path = Some(path.to_path_buf());
+            let name = file_name_display(path);
+            self.status = format!("Round trip landed on {name} — switched to its folder");
+            return;
+        }
         self.selected = Some(path.to_path_buf());
         self.pending_scroll_path = Some(path.to_path_buf());
         let (_, indices) = self.compute_list_indices();

@@ -10,8 +10,8 @@ use rust_feh::types::{
 use rust_feh::ui_logic::{
     add_or_update_asset_in_inventory, aggregate_batch_results, build_entry_filelist,
     compute_output_path, copy_image_to_clipboard, crop_preview_pixels, decode_image_to_rgba,
-    entry_is_launchable, expand_rename_pattern, load_launch_list, load_window_prefs,
-    save_launch_list, save_window_prefs, write_feh_filelist_to,
+    entry_is_launchable, expand_rename_pattern, list_subfolders, load_launch_list,
+    load_window_prefs, save_launch_list, save_window_prefs, write_feh_filelist_to,
 };
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
@@ -250,6 +250,25 @@ fn test_clipboard_non_image_error() {
     assert!(err.starts_with("Failed to decode image:"));
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn list_subfolders_returns_sorted_dirs_only() {
+    let dir = temp_test_dir("list-subfolders");
+    fs::create_dir_all(dir.join("b_sub")).unwrap();
+    fs::create_dir_all(dir.join("a_sub")).unwrap();
+    fs::write(dir.join("not_a_dir.txt"), b"x").unwrap();
+
+    let subs = list_subfolders(&dir);
+    assert_eq!(subs, vec![dir.join("a_sub"), dir.join("b_sub")]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn list_subfolders_missing_dir_is_empty() {
+    let missing = PathBuf::from("/definitely/missing/rust-feh-list-subfolders");
+    assert!(list_subfolders(&missing).is_empty());
 }
 
 #[test]
