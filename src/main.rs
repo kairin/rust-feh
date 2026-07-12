@@ -127,6 +127,7 @@ fn create_rust_feh_app(
         list_index_cache: std::cell::RefCell::new(None),
         tree_rows_cache: Vec::new(),
         tree_rows_cache_key: None,
+        inspector_width_cache: None,
     })
 }
 
@@ -481,6 +482,12 @@ struct RustFehApp {
     /// Cross-frame cache for the folder-tree rows (reused when `TreeRowsKey` unchanged).
     tree_rows_cache: Vec<TreeRow>,
     tree_rows_cache_key: Option<TreeRowsKey>,
+    /// Cached auto-sized Inspector width (feature 017, Phase 5):
+    /// (pixels_per_point the width was measured at, computed width in px).
+    /// Recomputed only when `pixels_per_point` changes — the sole input to
+    /// static-label text measurement, since this app never mutates fonts, text
+    /// styles, theme, or zoom. Prevents per-frame re-measurement and width jitter.
+    inspector_width_cache: Option<(f32, f32)>,
 }
 
 enum FehEntryAction {
@@ -2570,11 +2577,13 @@ impl RustFehApp {
             }
 
             if let Some(dir) = &self.current_dir {
+                let dir_str = dir.display().to_string();
                 ui.add(
-                    egui::Label::new(dir.display().to_string())
+                    egui::Label::new(dir_str.clone())
                         .selectable(true)
-                        .wrap_mode(egui::TextWrapMode::Wrap),
-                );
+                        .wrap_mode(egui::TextWrapMode::Truncate),
+                )
+                .on_hover_text(dir_str);
             } else {
                 ui.small("No folder loaded");
             }
@@ -2856,6 +2865,91 @@ impl RustFehApp {
         (viewport_w * 0.5).max(260.0)
     }
 
+    /// Auto-sized width (px) for the right-hand Inspector SidePanel
+    /// (feature 017, Phase 5).
+    ///
+    /// The panel is non-resizable and sized to the widest *static* label so its
+    /// width never jitters as dynamic text (folder names, file names, live
+    /// counts, scan status, selection) changes — a long SMB path must never be
+    /// able to peg it wide. Only compile-time string literals are measured (the
+    /// `const STATIC_LABELS: &[&str]` type makes it impossible to add runtime
+    /// state here). The result is cached and recomputed only when
+    /// `pixels_per_point` changes — the sole input to text measurement in this
+    /// app (it never mutates fonts, text styles, theme, or zoom; egui's Ctrl +/-
+    /// zoom is also covered because it flows through `pixels_per_point`).
+    fn inspector_width(&mut self, ctx: &egui::Context) -> f32 {
+        // ONLY literal, hardcoded strings that never change at runtime. NEVER a
+        // `self.*` value or `format!()` output. For headers whose live text is
+        // dynamic, a static identity/fallback template is measured instead of the
+        // live label; the dynamic tail (counts, names, paths) truncates, it does
+        // not size the panel.
+        const STATIC_LABELS: &[&str] = &[
+            // Section-header identity / static fallback templates.
+            "Browse — No folder loaded",
+            "Image actions — no selection",
+            "Feh instances",
+            "Session status",
+            "Activity log",
+            "✅ Dependencies — all required tools OK",
+            "Format discovery",
+            // Fixed intro (always visible, top of the panel).
+            "Inspector",
+            "Browse, image actions, session, and format routing.",
+            // Button / checkbox captions. All below the 280px floor today, so
+            // they never change the result; kept for completeness + robustness.
+            // Being constants, they can never introduce jitter.
+            "Choose folder",
+            "Rescan",
+            "Include subfolders",
+            "Detect exotic formats (slow)",
+            "Recheck tools on PATH",
+            "Open in feh",
+            "Quick resize 50% (demo)",
+            "Copy status",
+            "Detach window",
+        ];
+
+        // Fixed horizontal chrome added around the widest label so it is never
+        // clipped:
+        //   SidePanel frame inner margin (8 + 8; exact_width is "incl. margins") = 16
+        //   CollapsingHeader indent gutter (spacing.indent = 18)                 = 18
+        //   CollapsingHeader trailing button_padding.x (= 4)                     =  4
+        //   floating vertical scrollbar overlay (scroll bar_width = 10)          = 10
+        const PANEL_CHROME: f32 = 48.0;
+
+        let ppp = ctx.pixels_per_point();
+        if let Some((cached_ppp, cached_w)) = self.inspector_width_cache {
+            if cached_ppp == ppp {
+                return cached_w;
+            }
+        }
+
+        // CollapsingHeader labels render at TextStyle::Button; Body == Button size
+        // in egui defaults, so one FontId measures headers, the intro label, and
+        // button captions correctly.
+        let font_id = egui::TextStyle::Button.resolve(&ctx.style());
+        let max_text = ctx.fonts(|f| {
+            STATIC_LABELS
+                .iter()
+                .map(|s| {
+                    f.layout_no_wrap((*s).to_owned(), font_id.clone(), egui::Color32::WHITE)
+                        .size()
+                        .x
+                })
+                .fold(0.0_f32, f32::max)
+        });
+
+        // Clamp to [280, half-viewport]. The half-viewport cap is a HARD upper
+        // bound; when the window is so narrow the cap falls below 280, the cap
+        // wins — and floor == upper here avoids an f32::clamp(min > max) panic.
+        let upper = Self::inspector_max_width(ctx);
+        let floor = 280.0_f32.min(upper);
+        let w = (max_text + PANEL_CHROME).clamp(floor, upper);
+
+        self.inspector_width_cache = Some((ppp, w));
+        w
+    }
+
     fn render_session_status_body(
         &mut self,
         ui: &mut egui::Ui,
@@ -2893,8 +2987,9 @@ impl RustFehApp {
                         ui.add(
                             egui::Label::new(&self.status)
                                 .selectable(true)
-                                .wrap_mode(egui::TextWrapMode::Wrap),
-                        );
+                                .wrap_mode(egui::TextWrapMode::Truncate),
+                        )
+                        .on_hover_text(self.status.clone());
                     }
 
                     ui.add_space(8.0);
@@ -2906,10 +3001,11 @@ impl RustFehApp {
                             ui.monospace(spinner.to_string());
                         }
                         ui.add(
-                            egui::Label::new(tip)
+                            egui::Label::new(tip.clone())
                                 .selectable(true)
-                                .wrap_mode(egui::TextWrapMode::Wrap),
-                        );
+                                .wrap_mode(egui::TextWrapMode::Truncate),
+                        )
+                        .on_hover_text(tip);
                     });
                 });
         });
@@ -3153,14 +3249,12 @@ impl RustFehApp {
     }
 
     fn render_inspector_side_panel(&mut self, ctx: &egui::Context) {
-        let inspector_max_w = Self::inspector_max_width(ctx);
+        let inspector_w = self.inspector_width(ctx);
         egui::SidePanel::right("inspector")
-            .resizable(true)
-            .default_width(320.0_f32.min(inspector_max_w))
-            .min_width(260.0)
-            .max_width(inspector_max_w)
+            .resizable(false)
+            .exact_width(inspector_w)
             .show(ctx, |ui| {
-                ui.set_max_width(inspector_max_w);
+                ui.set_max_width(inspector_w);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
