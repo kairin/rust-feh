@@ -10,7 +10,9 @@ Status: todo | in-progress | blocked | done | verified
 | B-4 verification baseline | lead | **done** | 122 pass / 0 fail / 2 ignored; release build pass; fmt/clippy local-unavailable (CI-enforced); details in ENV.md |
 | A-closure (001/003/006 + 002/004) | lead | **done** | 006 T009 pass (evidence); 003 fully closed; 001 now 69/69. T038/T050/T058 closed 2026-07-05 by waiver-backed evidence: GNOME Wayland blocked synthetic clicks and Xvfb is not installed locally, but code/automated proxies verify behavior; waived residue is click synthesis only. |
 | C-1 / C-2 briefs | lead | **done** | C-1 caption: specified as 015 then **deferred** (maintainer 2026-07-05). C-2 image-tools: brief ready, not yet specified. |
-| 016 viewer round-trip & staged actions | sonnet-orchestrator + lead | **implemented, security-review PASS, PR pending merge** | 26/26 orchestrator tasks + T027 (PASS, zero HIGH/MED) + T028; 186 tests (+64); 3 short manual GUI checks listed in validation-results.md |
+| 016 viewer round-trip & staged actions | sonnet-orchestrator + lead | **done** | 26/26 orchestrator tasks + T027 (PASS, zero HIGH/MED) + T028; 186 tests (+64); 3 short manual GUI checks listed in validation-results.md; PR #151 merged to main (2da6097). |
+| 017 lazy-folder-scanning | sonnet-orchestrator + lead | **shipped, unmerged** | 6 commits on branch `017-lazy-folder-scanning` (tip `8689292`), never merged to `main` — branch `018-inspector-ux-rework` builds directly on top of it. Retro-specified 2026-07-12 under 018 Batch 0: `specs/017-lazy-folder-scanning/spec.md` + `tasks.md` (handback lists F1-F6 + deferred per-entry image-count cache, picked up as 018 Batch 0 prerequisites). |
+| 018 inspector-ux-rework | sonnet-orchestrator | **in-progress** | Batch 0 (pre-work fixes F1/F3-F6 + test isolation + SpecKit scaffolding) underway on branch `018-inspector-ux-rework`, 2026-07-12. Full batch plan: `specs/018-inspector-ux-rework/tasks.md`. Maintainer decisions: Browse collapsed-by-default, file list moves into inspector (central = stage only), menu duplicates removed, single pinnable Image-actions detached window. |
 
 ## Evidence log
 - 2026-07-05: Branch audit — feat/window-viewer-stability-validation tree-identical to main
@@ -28,3 +30,6 @@ Status: todo | in-progress | blocked | done | verified
 - 2026-07-05: 001 click-residue closure — T038/T050/T058 marked complete by waiver-backed evidence after `cargo test --test feature_001_validation` passed 9/9. Xvfb was not installed (`xvfb-run`/`Xvfb` absent), so literal synthetic clicks remained unperformed; code paths and automated proxies verify the underlying behavior.
 - 2026-07-05: Dependabot reports 137 vulns on default branch (presumed archive/original-nfeh;
   Codacy excludes it, Dependabot does not) — surfaced to maintainer, no action taken.
+- 2026-07-12: 016 BOARD row corrected to reflect PR #151 already merged to `main`
+  (`2da6097`); 017/018 rows added; see `specs/017-lazy-folder-scanning/` and
+  `specs/018-inspector-ux-rework/` for detail.

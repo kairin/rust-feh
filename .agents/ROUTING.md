@@ -13,7 +13,7 @@
 | 002 closure record | A | specs/002-feh-runtime-detection/spec.md (Clarifications) | superseded by 009 |
 | 004 closure record | A | specs/004-scanner-resilience/spec.md (Clarifications) | absorbed by 011 |
 | C-1 caption plugin | C | .agents/briefs/caption-plugin.md → future specs/015-* | future feature folder |
-| C-2 image-tools integration | C | .agents/briefs/image-tools-merge.md → future specs/016-* | future feature folder |
+| C-2 image-tools integration | C | .agents/briefs/image-tools-merge.md → future specs/019-* | future feature folder |
 | C-3 keyboard navigation | C | BACKLOG.md (deferred) | future feature folder |
 | C-4 full config persistence | C | BACKLOG.md (deferred) | future feature folder |
 

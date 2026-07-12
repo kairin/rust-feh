@@ -1,0 +1,95 @@
+# Tasks: Inspector UX Rework
+
+**Input**: Design documents from `/specs/018-inspector-ux-rework/`
+**Prerequisites**: spec.md, plan.md
+
+**Board rules**: single writer = owning orchestrator. Batch 0 is prerequisite-only (bug fixes + SpecKit scaffolding); Batches 1–6 are incremental rework, each checkpointing `cargo test` green before advancing.
+
+---
+
+## Batch 0 — Pre-work fixes + SpecKit scaffolding (MUST land before rework)
+
+- [ ] 0.1 [S] Create specs/018-inspector-ux-rework/ + branch 018-inspector-ux-rework — folder+branch exist; acceptance: `ls -d specs/018-inspector-ux-rework/` returns the directory, `git branch | grep 018-inspector-ux-rework` shows the branch checked out
+- [ ] 0.2 [S] Back-fill retro specs/017-lazy-folder-scanning/ (spec+tasks+handback: deferred per-entry count cache, F1-F6 follow-ups) — folder exists, handback lists F1-F6; acceptance: 017's spec.md/tasks.md/handback section complete, F1-F6 referenced in Batch 0 tasks below
+- [ ] 0.3 [S] Refresh stale 016 BOARD row; resolve BACKLOG C-2 "likely 017" numbering collision — no dangling 017 ref for image-tools; 016 row current; acceptance: `.agents/BOARD.md` shows 016 merged or in-flight, 017 reference removes the image-tools ambiguity
+- [ ] 0.4 [O-review][H] F1: merge Converted snapshot by path instead of wholesale self.images replace (merge_converted_statuses in ui_logic.rs) — ScanMsg::Converted arm in main.rs; acceptance: user-added/renamed entries survive a background Converted refresh, only matching-path status flips
+- [ ] 0.5 [H] F1 tests: unit test merge_converted_statuses (extra entry preserved, path match flips status, no add/remove) — tests/unit or in-crate ui_logic.rs tests; green
+- [ ] 0.6 [H] F3: inspector_width cache stores only measured max_text keyed on pixels_per_point, re-clamps to live inspector_max_width every call — main.rs inspector_width; acceptance: width tracks window resize, no per-frame font relayout
+- [ ] 0.7 [H] F4: replace meaningless "Launched feh on {status}" success message with a count/folder-based message — main.rs launch_entry_feh; acceptance: status no longer prints "Launched feh on Ready"
+- [ ] 0.8 [H] F5: pending_flat_scroll_offset peek-then-take so a not-yet-rendered target row doesn't consume the pending scroll and lose it — main.rs; acceptance: cross-folder round-trip scrolls to the landed image on the frame it appears
+- [ ] 0.9 [H] F6: same-folder round-trip landing during an in-flight scan also arms pending_select_path so it isn't clobbered by the scan's default-to-images[0] — main.rs stage_selection_from_round_trip; acceptance: landing during a live scan is not clobbered
+- [ ] 0.10 [H*] Test isolation: extract load/save_action_prefs_from/_to(&Path) cores, point the 3 in-crate tests at scratch dirs, delete ACTION_PREFS_TEST_LOCK + its backup/restore dance — ui_logic.rs; acceptance: tests never touch the real ~/.config/rust-feh/action-prefs.json, green
+- [ ] 0.11 [S] Delete the stray real ~/.config/rust-feh/action-prefs.json written by prior test runs — filesystem; acceptance: file absent
+
+---
+
+## Batch 1 — Open-state generalization + width floor
+
+- [ ] 1.1 [H] Add InspectorSection enum (7 variants + ALL), initial_open_sections(...) -> HashSet<InspectorSection>, PanelPin::Image(PathBuf), DetachedWindow{pin}, PanelContext{image,folder,pinned} to ui_logic.rs — pure additions; acceptance: compiles, no behavior change
+- [ ] 1.2 [H] Unit tests: initial_open_sections (4 combos) + PanelContext pinned-vs-live resolution — green; acceptance: initial_open_sections returns {Browse} when folder missing, {Browse} when live scan detected, {} for normal run, {Dependencies} when tool missing
+- [ ] 1.3 [H*] App struct swap: delete 7 open-bools + deps_section_open plumbing; add inspector_open: HashSet<InspectorSection> from initial_open_sections; add toggle_inspector_section — acceptance: compiles, 7 headers still toggle
+- [ ] 1.4 [H] Width floor: raise 280 floor to ~440 for the list-bearing inspector; add persistent captions (Up/Flat/Tree/drawer toggle) to STATIC_LABELS — safe only after 0.6 (F3) lands; acceptance: wider panel, stable across resize, no truncated static captions
+
+---
+
+## Batch 2 — File list into inspector + central=stage (the big move)
+
+- [ ] 2.1 [O-review][S+H] Remove the infinite outer ScrollArea wrapping the inspector; restructure into the three-zone column (see plan.md) — acceptance: zones render top-to-bottom, no infinite-scroll
+- [ ] 2.2 [H*] Zone A nav strip: Up + truncated breadcrumb (hover full) + Flat/Tree toggle + spinner — acceptance: Up disabled at fs root, breadcrumb truncates+hovers, Flat/Tree flips view, spinner while subfolders pending
+- [ ] 2.3 [H] Zone B: move subfolder drill-down scroll into inspector — acceptance: drill-down navigates from inspector
+- [ ] 2.4 [H*][S] Zone C: relocate the flat/tree list renderers (+ virtualization/caches) into the inspector, list height = available − drawer reserved height — acceptance: 10k-image list still virtualized, flat & tree both work, selection + row context menu work
+- [ ] 2.5 [H*] Zone D drawer: meta-collapse toggle → bounded ScrollArea of the 7 CollapsingHeaders — acceptance: all 7 fold/unfold, drawer collapsed by default → list ≈ full height
+- [ ] 2.6 [H*] Auto-expand as per-frame inserts before header build (scanning → Session status; no folder → Browse + open drawer) — acceptance: first run opens drawer+Browse, scanning opens Session status, missing tools opens Dependencies at startup
+- [ ] 2.7 [S] Central = stage only: gut the central panel to fill with the stage pane, drop list/inventory/subfolder-nav; reorder update() so the inspector computes filtered/list indices itself — acceptance: central shows only the current image filling the panel
+- [ ] 2.8 [S] Regression smoke: folder tree toggle unaffected, round-trip landing (0.8/0.9 fixes) still scrolls/selects in the relocated list, no double-scan
+
+---
+
+## Batch 3 — De-duplication (decision 3)
+
+- [ ] 3.1 [H*] Remove menu duplicates (File→Choose folder/Rescan, View→Include subfolders/Detect exotic); drop empty menu shells if emptied — acceptance: menus no longer duplicate Browse, actions still reachable in Browse
+- [ ] 3.2 [H] Delete "Quick resize 50% (demo)" button + orphaned helper + its STATIC_LABELS entry; fix stale status copy referencing it — acceptance: no "quick resize" string outside specs
+- [ ] 3.3 [O-review][S+H] Shared image context menu used by both stage and list rows (rename/generalize the existing stage context menu) — acceptance: right-click a list row shows the same action set as the stage
+- [ ] 3.4 [H*] Delete the hand-rolled clipboard popup, route secondary-click into the shared context menu — acceptance: dismiss semantics work via egui built-ins, clipboard-copy tests still green
+
+---
+
+## Batch 4 — Detached-window generalization
+
+- [ ] 4.1 [H*] Replace 7 *_detached bools with detached: HashMap<InspectorSection, DetachedWindow> — acceptance: detach/close round-trips for all 7
+- [ ] 4.2 [S] Rewrite the detached-windows render loop to iterate InspectorSection::ALL (deterministic order, never a HashMap) with one shared window-chrome helper — acceptance: pixel-parity for all 7 windows
+- [ ] 4.3 [H] Parity fix: detached Image-actions window gains the Image Tools section it currently omits — acceptance: detached window now shows Image Tools
+
+---
+
+## Batch 5 — Target pinning (decision 4)
+
+- [ ] 5.1 [H] panel_context(&self, pin) -> PanelContext resolving pin-or-live into owned clones BEFORE any &mut self body runs — acceptance: 1.2 tests cover resolution
+- [ ] 5.2 [O-review][S] Orchestrator-enumerated grep of every self.selected read in the Image-actions/Image-Tools subtree, emit the exact edit list — acceptance: list reviewed before 5.3
+- [ ] 5.3 [H*] Thread &PanelContext through the image-actions subtree per 5.2's edit list; add a pinned "open in feh" path that bypasses live-selection resolution — acceptance: pinned window's actions operate on the pinned image even when list selection differs
+- [ ] 5.4 [S] Pin UI in the detached Image-actions window: Pin/Unpin toggle, 📌 title, stale-pin handling (pinned file gone → disable actions + hint) — acceptance: pin survives selection changes, unpin follows selection again
+- [ ] 5.5 [S] Security: run /security-review on the pinning diff (subprocess argument construction, pinned path feeding a feh spawn) — acceptance: clean or findings fixed
+
+---
+
+## Batch 6 — Final audit & verification
+
+- [ ] 6.1 [H] STATIC_LABELS audit (removed captions gone, added captions present, floor correct) — acceptance: grep for old keys returns zero, new keys present
+- [ ] 6.2 [S] Full quickstart run + /verify: first-run → drawer+Browse auto-open → choose folder → drill down → list dominates → flip Flat/Tree → scan auto-opens Session status → detach + pin Image actions → row context menu → central stage tracks selection — acceptance: all steps execute, no errors, activity log records actions
+- [ ] 6.3 [S] Push + draft PR only with maintainer/coordinator approval; CI green (clippy CI-only) — acceptance: PR link recorded, CI checks pass
+
+---
+
+## Checkpoint Strategy
+
+- **After Batch 0**: `cargo test` green; F1–F6 prerequisites merged
+- **After Batch 1**: `cargo test` green; HashSet open-state compiles
+- **After Batch 2**: `cargo test` green; three-zone layout renders; list still virtualized; no scroll jitter
+- **After Batch 3**: `cargo test` green; menus cleaned; context menu unified
+- **After Batch 4**: `cargo test` green; all 7 sections can detach
+- **After Batch 5**: `cargo test` green; security review passed; pinning works end-to-end
+- **After Batch 6**: `cargo test` green; quickstart full-run validated; PR ready
+
+---
+
+**Dependencies**: Batch 0 blocks all rework batches (F3 in particular blocks 1.4). All `src/main.rs`-touching subtasks within a batch serialize (never two live agents writing main.rs at once); `ui_logic.rs`/tests/markdown subtasks may run in parallel with the main.rs chain when they don't touch the same file. `[O-review]` marks a cited Opus escalation trigger (concurrency/architectural/security-sensitive) per `.agents/GUARDRAILS.md` — see `/home/kkk/.claude/plans/launch-app-encapsulated-fog-agent-aa7244c25082d207c.md` for the full risk register behind each trigger.
