@@ -18,13 +18,13 @@ use rust_feh::ui_logic::{
     compute_output_path, copy_image_to_clipboard, crop_preview_pixels, default_tree_expanded,
     entry_is_launchable, execute_move_plan, expand_rename_pattern, feh_entry_filelist_path,
     feh_filelist_temp_path, feh_missing_status, feh_not_installed_launch_status, file_name_display,
-    file_status_label, finalize_scan_entries_fast, folder_line_suffix, folder_tree_display_name,
+    file_status_decodable, file_status_label, finalize_scan_entries_fast, folder_line_suffix,
+    folder_tree_display_name,
     format_action_outcome, format_image_tools_log, format_inventory_bar, handoff_path,
     initial_open_sections, inventory_magick_hint, is_network_mount_path, join_activity_log,
     list_indices,
     list_subfolders, list_view_mode_label, load_action_prefs, load_launch_list, load_window_prefs,
     merge_converted_statuses, plan_loss_proof_move, post_scan_status, prepare_fast_work_dir,
-    refresh_entry_and_inventory,
     relative_folder, save_action_prefs, save_copy_to, save_launch_list, save_window_prefs,
     scan_magick_enabled, showing_count_label, sort_mode_label, spawn_job, tree_file_glyph,
     tree_visible_rows, validate_handoff, viewer_profile_dir, viewer_spawn_command,
@@ -110,7 +110,6 @@ fn create_rust_feh_app(
         prepare_fast_temp: None,
         launch_entries: load_launch_list(),
         selected_tree_folder: None,
-        clipboard_context_menu: None,
         stage_generation: 0,
         stage_requested_path: None,
         stage_state: StageState::Loading,
@@ -202,12 +201,6 @@ struct ActiveToolsJob {
     precache_ok: usize,
     prepare_paths: Vec<PathBuf>,
     prepare_temp: PathBuf,
-}
-
-#[derive(Clone)]
-struct ClipboardContextMenu {
-    image_path: PathBuf,
-    anchor_pos: egui::Pos2,
 }
 
 fn filter_label(f: Filter) -> &'static str {
@@ -456,7 +449,6 @@ struct RustFehApp {
     prepare_fast_temp: Option<PathBuf>,
     launch_entries: FehLaunchList,
     selected_tree_folder: Option<PathBuf>,
-    clipboard_context_menu: Option<ClipboardContextMenu>,
     format_route_open: HashSet<String>,
     /// Dev/test: auto-load `RUST_FEH_START_FOLDER` once on first frame.
     start_folder_loaded: bool,
@@ -718,7 +710,7 @@ impl RustFehApp {
             ));
             self.selected = Some(path.clone());
             self.status = format!(
-                "Selected: {}. Use Tools → Open in feh or Quick resize.",
+                "Selected: {}. Use Image actions to open in feh, or right-click for Resize/Convert.",
                 path.display()
             );
             return Some(path);
@@ -738,43 +730,6 @@ impl RustFehApp {
             return;
         };
         self.open_in_feh(&path);
-    }
-
-    fn run_quick_resize_demo(&mut self, path: &Path) {
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-        let out = path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(format!("{stem}_processed.jpg"));
-        let opts = ProcessOptions {
-            width: None,
-            height: None,
-            percent: Some(50.0),
-            fit: None,
-            filter: None,
-            target_format: Some("jpg".into()),
-            quality: Some(80),
-            output_path: Some(out),
-        };
-        match process_image(path, &opts) {
-            Ok(out) => {
-                if let Some(ref inv) = self.scan_inventory {
-                    let inventory = refresh_entry_and_inventory(
-                        &mut self.images,
-                        path,
-                        inv.non_image_skipped,
-                        inv.magick_identify_truncated,
-                    );
-                    self.scan_inventory = Some(inventory);
-                }
-                self.status = format!("Processed → {} (inventory updated)", out.display());
-                self.log(format!("Resize demo created: {}", out.display()));
-            }
-            Err(e) => {
-                self.status = format!("Process error: {}", e);
-                self.log(format!("Resize error: {}", e));
-            }
-        }
     }
 
     fn clamp_viewport_size(&self, size: egui::Vec2) -> egui::Vec2 {
@@ -1118,7 +1073,7 @@ impl RustFehApp {
 
     fn render_format_discovery_body(&mut self, ui: &mut egui::Ui) {
         ui.small(
-            "Scan = native listed or magick-detected; View = feh; Resize = quick resize demo.",
+            "Scan = native listed or magick-detected; View = feh.",
         );
         let routes = self.tool_caps.format_routes();
         for route in &routes {
@@ -1200,25 +1155,11 @@ impl RustFehApp {
     }
 
     fn render_image_actions_body(&mut self, ui: &mut egui::Ui) {
-        let has_folder = self.current_dir.is_some();
-        let has_selection = self.selected.is_some();
         let feh_ready = self.feh_open_ready();
 
         if Self::feh_button(ui, "Open in feh", self.feh_available, feh_ready).clicked() {
             self.log("User clicked 'Open in feh' (inspector)");
             self.try_open_in_feh();
-        }
-        if ui
-            .add_enabled(
-                has_folder && has_selection,
-                egui::Button::new("Quick resize 50% (demo)"),
-            )
-            .clicked()
-        {
-            if let Some(path) = self.selected.clone() {
-                self.log("User clicked resize demo (inspector)");
-                self.run_quick_resize_demo(&path);
-            }
         }
     }
 
@@ -1230,7 +1171,7 @@ impl RustFehApp {
 
         if Self::render_segment_detach_toolbar(
             ui,
-            "Open selected image in feh or run quick resize",
+            "Open selected image in feh",
             "Detach window",
         ) {
             self.image_actions_detached = true;
@@ -1663,54 +1604,6 @@ impl RustFehApp {
             self.feh_instances_detached = true;
         }
         self.render_feh_instances_body(ui);
-    }
-
-    fn open_clipboard_context_menu(&mut self, image_path: PathBuf, anchor_pos: egui::Pos2) {
-        self.clipboard_context_menu = Some(ClipboardContextMenu {
-            image_path,
-            anchor_pos,
-        });
-    }
-
-    fn render_clipboard_context_menu(&mut self, ctx: &egui::Context) {
-        let Some(menu) = self.clipboard_context_menu.clone() else {
-            return;
-        };
-
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.clipboard_context_menu = None;
-            return;
-        }
-        if ctx.input(|i| i.pointer.primary_clicked()) {
-            if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
-                let popup_rect = egui::Rect::from_min_size(menu.anchor_pos, egui::vec2(220.0, 44.0));
-                if !popup_rect.contains(pos) {
-                    self.clipboard_context_menu = None;
-                    return;
-                }
-            }
-        }
-
-        egui::Area::new(egui::Id::new("clipboard_context_menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(menu.anchor_pos)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    if ui.button("📋 Copy image to clipboard").clicked() {
-                        match copy_image_to_clipboard(&menu.image_path) {
-                            Ok(status) => {
-                                self.status = status.clone();
-                                self.log(status);
-                            }
-                            Err(err) => {
-                                self.status = err.clone();
-                                self.log(format!("Clipboard copy failed: {err}"));
-                            }
-                        }
-                        self.clipboard_context_menu = None;
-                    }
-                });
-            });
     }
 
     fn tools_output_policy(&self) -> OutputPolicy {
@@ -2627,9 +2520,7 @@ impl RustFehApp {
                         ui.checkbox(&mut self.recursive, "Include subfolders").changed();
                 });
                 if recursive_changed {
-                    if let Some(d) = self.current_dir.clone() {
-                        self.scan_directory(&d);
-                    }
+                    self.rescan_current_folder_if_any();
                 }
             });
 
@@ -2647,15 +2538,11 @@ impl RustFehApp {
                         .changed();
                 });
                 if deep_changed {
-                    if let Some(d) = self.current_dir.clone() {
-                        self.scan_directory(&d);
-                    }
+                    self.rescan_current_folder_if_any();
                 }
 
                 if ui.add_enabled(has_folder, egui::Button::new("Rescan")).clicked() {
-                    if let Some(d) = self.current_dir.clone() {
-                        self.scan_directory(&d);
-                    }
+                    self.rescan_current_folder_if_any();
                 }
             });
 
@@ -2971,7 +2858,6 @@ impl RustFehApp {
             "Detect exotic formats (slow)",
             "Recheck tools on PATH",
             "Open in feh",
-            "Quick resize 50% (demo)",
             "Copy status",
             "Detach window",
         ];
@@ -3258,20 +3144,6 @@ impl RustFehApp {
     }
 
     fn render_view_menu(&mut self, ui: &mut egui::Ui) {
-        if ui.checkbox(&mut self.recursive, "Include subfolders").changed() {
-            ui.close_menu();
-            self.rescan_current_folder_if_any();
-        }
-        if ui
-            .checkbox(
-                &mut self.deep_scan_magick,
-                "Detect exotic formats (slow)",
-            )
-            .changed()
-        {
-            ui.close_menu();
-            self.rescan_current_folder_if_any();
-        }
         ui.menu_button("Window size", |ui| {
             for preset in [
                 WindowSizePreset::Compact,
@@ -3301,16 +3173,6 @@ impl RustFehApp {
     fn render_top_menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Choose folder...").clicked() {
-                        ui.close_menu();
-                        self.pick_folder();
-                    }
-                    if ui.button("Rescan").clicked() {
-                        ui.close_menu();
-                        self.rescan_current_folder_if_any();
-                    }
-                });
                 ui.menu_button("View", |ui| self.render_view_menu(ui));
             });
         });
@@ -3493,17 +3355,10 @@ impl RustFehApp {
         ui.add_space(4.0);
     }
 
-    fn handle_image_row_click(
-        &mut self,
-        response: &egui::Response,
-        path: PathBuf,
-    ) {
-        if response.secondary_clicked() {
-            let anchor_pos = response
-                .interact_pointer_pos()
-                .unwrap_or(response.rect.left_bottom());
-            self.open_clipboard_context_menu(path.clone(), anchor_pos);
-        }
+    /// Primary-click selection for a file-list row. Right-click is handled
+    /// natively by `render_image_context_menu`'s `Response::context_menu`, so
+    /// this no longer routes a custom popup (feature 018 B3.3).
+    fn handle_image_row_click(&mut self, response: &egui::Response, path: PathBuf) {
         if response.clicked() {
             self.select_image(path);
         }
@@ -3523,12 +3378,14 @@ impl RustFehApp {
         let folder = relative_folder(list_root, &path);
         let name = file_name_display(&path);
         let status = file_status_label(self.images[idx].status);
+        let decodable = file_status_decodable(self.images[idx].status);
         let is_selected = self.selected.as_ref() == Some(&path);
         ui.horizontal(|ui| {
             ui.allocate_ui(egui::vec2(metrics.folder_col_w, metrics.row_h), |ui| {
                 ui.label(egui::RichText::new(folder).weak());
             });
             let response = ui.selectable_label(is_selected, &name);
+            self.render_image_context_menu(&response, &path, decodable);
             self.handle_image_row_click(&response, path);
             ui.allocate_ui(egui::vec2(metrics.status_col_w, metrics.row_h), |ui| {
                 ui.small(status);
@@ -3630,6 +3487,7 @@ impl RustFehApp {
         let name = file_name_display(&path);
         let glyph = tree_file_glyph(self.images[idx].status);
         let status = file_status_label(self.images[idx].status);
+        let decodable = file_status_decodable(self.images[idx].status);
         let label = if self.images[idx].status == rust_feh::types::FileStatus::Converted {
             format!("{glyph} {name}  [{status}]")
         } else {
@@ -3639,6 +3497,7 @@ impl RustFehApp {
         ui.horizontal(|ui| {
             ui.add_space(indent);
             let response = ui.selectable_label(is_selected, label);
+            self.render_image_context_menu(&response, &path, decodable);
             self.handle_image_row_click(&response, path);
         });
     }
@@ -3867,11 +3726,20 @@ impl RustFehApp {
                 .fit_to_exact_size(draw_size)
                 .sense(egui::Sense::click()),
         );
-        self.render_stage_context_menu(&response, &path);
+        let decodable = matches!(self.stage_state, StageState::Ready { .. });
+        self.render_image_context_menu(&response, &path, decodable);
     }
 
-    fn render_stage_context_menu(&mut self, response: &egui::Response, path: &Path) {
-        let decodable = matches!(self.stage_state, StageState::Ready { .. });
+    /// Shared right-click context menu for a decodable image, used by BOTH the
+    /// central stage and file-list rows (feature 018 B3.3). `decodable` gates the
+    /// process-only actions (Resize/Convert/Copy image): the stage derives it from
+    /// `StageState::Ready`, list rows from `file_status_decodable(status)`.
+    fn render_image_context_menu(
+        &mut self,
+        response: &egui::Response,
+        path: &Path,
+        decodable: bool,
+    ) {
         response.context_menu(|ui| {
             let ctx = ui.ctx().clone();
             if ui.button("Save a copy…").clicked() {
@@ -4059,7 +3927,12 @@ impl RustFehApp {
 
     /// After a successful move, advance the stage/selection to the next
     /// surviving image in the filtered list (edge case: never a stale frame).
+    /// Only advances when the MOVED file was the staged/selected one (018
+    /// Batch 3: "Move to…" is now reachable from any list row, not just the
+    /// staged image — moving a different row must not yank the stage/
+    /// selection away from what the user was actually looking at).
     fn advance_stage_after_move(&mut self, moved_path: &Path) {
+        let was_selected = self.selected.as_deref() == Some(moved_path);
         let (_, indices_before) = self.compute_list_indices();
         let pos = indices_before
             .iter()
@@ -4067,6 +3940,9 @@ impl RustFehApp {
         self.images.retain(|e| e.path != moved_path);
         // cache invariant: bump on every self.images mutation
         self.images_revision = self.images_revision.wrapping_add(1);
+        if !was_selected {
+            return;
+        }
         let (_, indices_after) = self.compute_list_indices();
         self.selected = if indices_after.is_empty() {
             None
@@ -4125,7 +4001,6 @@ impl App for RustFehApp {
         self.render_inspector_side_panel(ctx);
         self.render_central_image_panel(ctx);
 
-        self.render_clipboard_context_menu(ctx);
         self.render_detached_inspector_windows(ctx);
         self.request_repaint_if_busy(ctx);
     }
@@ -4137,7 +4012,7 @@ impl RustFehApp {
         self.selected = Some(path);
         self.log(format!("Selected image: {}", disp));
         self.status = format!(
-            "Selected: {}. Use Tools → Open in feh or Quick resize.",
+            "Selected: {}. Use Image actions to open in feh, or right-click for Resize/Convert.",
             disp
         );
     }

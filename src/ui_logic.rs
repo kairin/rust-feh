@@ -661,6 +661,15 @@ pub fn file_status_label(status: FileStatus) -> &'static str {
     }
 }
 
+/// Whether this app's own Rust decode/process pipeline can open and process a
+/// listed file. `MagickDetected` rows were only magic-byte-sniffed by ImageMagick
+/// and not yet converted into a format the `image` crate understands ("awaiting
+/// convert"), so they are not decodable/processable here — only `NativeListed`
+/// and `Converted` are. Mirrors the stage's `StageState::Ready` gate for list rows.
+pub fn file_status_decodable(status: FileStatus) -> bool {
+    matches!(status, FileStatus::NativeListed | FileStatus::Converted)
+}
+
 pub fn tree_file_glyph(status: FileStatus) -> &'static str {
     match status {
         FileStatus::MagickDetected => "○",
@@ -2079,6 +2088,13 @@ mod tests {
             "magick · awaiting convert"
         );
         assert_eq!(file_status_label(FileStatus::Converted), "converted");
+    }
+
+    #[test]
+    fn file_status_decodable_matches_native_and_converted_only() {
+        assert!(file_status_decodable(FileStatus::NativeListed));
+        assert!(file_status_decodable(FileStatus::Converted));
+        assert!(!file_status_decodable(FileStatus::MagickDetected));
     }
 
     #[test]
