@@ -1737,9 +1737,19 @@ mod tests {
     #[test]
     fn merge_converted_preserves_unmatched_images_entry() {
         let mut images = vec![
-            entry_full("/d/a.png", None, FileStatus::NativeListed, AssetStatus::Regular),
+            entry_full(
+                "/d/a.png",
+                None,
+                FileStatus::NativeListed,
+                AssetStatus::Regular,
+            ),
             // processed-add / renamed-away: path the snapshot never carried
-            entry_full("/d/derived.png", Some(10), FileStatus::NativeListed, AssetStatus::Processed),
+            entry_full(
+                "/d/derived.png",
+                Some(10),
+                FileStatus::NativeListed,
+                AssetStatus::Processed,
+            ),
         ];
         let snapshot = vec![entry_full(
             "/d/a.png",
@@ -1773,12 +1783,22 @@ mod tests {
     #[test]
     fn merge_converted_is_count_preserving_no_leak() {
         let mut images = vec![
-            entry("/d/a.png"),           // matched
+            entry("/d/a.png"),              // matched
             entry("/d/only_in_images.png"), // images-only
         ];
         let snapshot = vec![
-            entry_full("/d/a.png", None, FileStatus::Converted, AssetStatus::Regular),
-            entry_full("/d/only_in_snapshot.png", None, FileStatus::Converted, AssetStatus::Regular),
+            entry_full(
+                "/d/a.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
+            entry_full(
+                "/d/only_in_snapshot.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
         ];
         merge_converted_statuses(&mut images, &snapshot);
         assert_eq!(images.len(), 2);
@@ -1793,8 +1813,18 @@ mod tests {
     fn merge_converted_does_not_resurrect_snapshot_only_path() {
         let mut images = vec![entry("/d/a.png")];
         let snapshot = vec![
-            entry_full("/d/a.png", None, FileStatus::Converted, AssetStatus::Regular),
-            entry_full("/d/moved_away.png", None, FileStatus::Converted, AssetStatus::Regular),
+            entry_full(
+                "/d/a.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
+            entry_full(
+                "/d/moved_away.png",
+                None,
+                FileStatus::Converted,
+                AssetStatus::Regular,
+            ),
         ];
         merge_converted_statuses(&mut images, &snapshot);
         assert_eq!(images.len(), 1);

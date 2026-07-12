@@ -2955,9 +2955,6 @@ impl RustFehApp {
             "Activity log",
             "✅ Dependencies — all required tools OK",
             "Format discovery",
-            // Fixed intro (always visible, top of the panel).
-            "Inspector",
-            "Browse, image actions, session, and format routing.",
             // Button / checkbox captions. All below the 280px floor today, so
             // they never change the result; kept for completeness + robustness.
             // Being constants, they can never introduce jitter.
@@ -2969,6 +2966,27 @@ impl RustFehApp {
             "Open in feh",
             "Copy status",
             "Detach window",
+            // Zone A nav strip (018 Batch 2): Up button + Flat/Tree view toggle.
+            "⬆ Up",
+            "Flat list",
+            "Folder tree",
+            // Zone D drawer meta-toggle + its static description line (018
+            // Batch 2) — the description is the widest static label in the
+            // panel (measured ~252px incl. Button-style font metrics), still
+            // well under the 440px floor's ~392px usable text budget.
+            "▶ Details",
+            "▼ Details",
+            "Browse · actions · session · log · deps · formats",
+            // Pin-to-current-image toggle in the detached Image-actions window
+            // (018 Batch 5). Rendered in a separate egui::Window, not this
+            // SidePanel, but included for completeness/robustness per the
+            // doctrine above — cannot introduce jitter, being a constant.
+            "Pin to current image",
+            "Unpin (follow selection)",
+            // Zone C flat-list column headers (018 Batch 2).
+            "Folder",
+            "Filename",
+            "Status",
         ];
 
         // Fixed horizontal chrome added around the widest label so it is never
