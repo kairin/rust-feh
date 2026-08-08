@@ -25,14 +25,13 @@ _Verified 2026-07-05 by lead architect. Re-verify before relying on anything tim
 - Static counts (2026-07-05): 125 `#[test]` fns (52 in src/, 73 in tests/), 0 `#[ignore]`,
   0 TODO/FIXME in src/. Docs cite "2 ignored" from older runs — reconciled by B-4 fresh run
   (results appended below when run).
-- Codacy: excludes `archive/**`, `target/**`, `tests/**`, `specs/**`; 50-line function limit,
-  complexity caps; clippy runs `-D warnings`.
+- Conventions: 50-line function limit, complexity caps; clippy runs `-D warnings`.
 
 ## Known environment notes
 - GUI available locally (Linux desktop) — manual validations run as scripted GUI sessions
   (xdotool + grim/import), per user decision 2026-07-05.
 - GitHub Dependabot reports 137 vulnerabilities on default branch — presumed to be
-  `archive/original-nfeh/` (excluded from Codacy but not Dependabot). Flagged to maintainer;
+  `archive/original-nfeh/`. Flagged to maintainer;
   candidate fix: `.github/dependabot.yml` ignore rules or archive removal decision (human call).
 
 ## B-4 fresh verification run (2026-07-05, main @ 3bdcdff)

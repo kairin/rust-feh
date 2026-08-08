@@ -14,7 +14,7 @@ specs/NEXT-ROUND-CONSOLIDATED.md, open issue #35, existing tests, AGENTS.md.
   scan/filter/sort/select/launch; feh owns viewing. Single native binary, egui/eframe 0.30
   glow. It is NOT an image editor, NOT a thumbnail picker, NOT ImageMagick-dependent.
 - Health invariants: `cargo test` green; `cargo clippy -- -D warnings` clean;
-  `cargo fmt --check` clean; release build succeeds; CI green; Codacy clean.
+  `cargo fmt --check` clean; release build succeeds; CI green.
 
 ## B-1 — .specify 0.12.4 upgrade (IN FLIGHT: PR #145)
 DONE when: the 7-file diff (reviewed clean 2026-07-05) is merged to main via PR with green
