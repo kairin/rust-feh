@@ -43,8 +43,8 @@ task file before doing anything.
 ## Repo constraints for all implementers
 - Keep logic OUT of `main.rs` (3510 lines — biggest liability). Testable homes: `ui_logic.rs`,
   `image_proc.rs`, `tool_caps.rs`, `scanner.rs`, `types.rs`.
-- Codacy limits: 50-line functions, complexity caps. Clippy `-D warnings`. `cargo fmt` clean.
-- Small branches, green CI, Codacy clean; PR discipline as per repo history.
+- 50-line functions, complexity caps. Clippy `-D warnings`. `cargo fmt` clean.
+- Small branches, green CI; PR discipline as per repo history.
 
 ## Delegation model (Phase 3)
 - **Sonnet orchestrator** owns one task set / one class-A feature: decompose, dispatch Haiku,
