@@ -13,7 +13,7 @@ Rules:
   ambiguous, cross-cutting, or touches more than 5 files, STOP and report back — do not
   improvise (that is an Opus-escalation trigger, not your call).
 - Keep logic out of `main.rs`; testable homes are `ui_logic.rs`, `image_proc.rs`,
-  `tool_caps.rs`, `scanner.rs`, `types.rs`. Functions ≤ 50 lines (Codacy); clippy must pass
+  `tool_caps.rs`, `scanner.rs`, `types.rs`. Functions ≤ 50 lines; clippy must pass
   with `-D warnings`; `cargo fmt` clean.
 - Write or adjust tests for what you change; run `cargo test` and report actual pass/fail
   output against the acceptance criteria — never "looks done".

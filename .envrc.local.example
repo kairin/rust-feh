@@ -29,11 +29,5 @@ if ! declare -F load_secret >/dev/null; then
   }
 fi
 
-# --- Codacy CLI (project-level) ---
-load_secret CODACY_PROJECT_TOKEN "$DOTFILES/.codacy/kairin-rust-feh.project-token"
-export CODACY_ORGANIZATION_PROVIDER="gh"
-export CODACY_USERNAME="kairin"
-export CODACY_PROJECT_NAME="rust-feh"
-
 # --- Rust dev ergonomics ---
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
