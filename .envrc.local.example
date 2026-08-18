@@ -7,7 +7,7 @@
 #
 # Parent ~/Apps/.envrc.local (via source_up in .envrc) already loads shared
 # workspace tokens from ~/.dotfiles/ (model API keys, GH_*, HF_*, account-level
-# Codacy, Context7, Playwright MCP, billing vars, etc.).
+# Context7, Playwright MCP, billing vars, etc.).
 #
 # Keep this file minimal: project-specific tokens/metadata and machine overrides
 # for THIS repo only. Workspace-wide model API keys stay parent-only.
