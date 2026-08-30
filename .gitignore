@@ -32,3 +32,6 @@
 *.log
 *.tmp
 *.bak
+
+# Hermes agent scratch (plans/skills), not project deliverables
+.hermes/
